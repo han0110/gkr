@@ -1,0 +1,17 @@
+[package]
+name = "gkr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+halo2_curves = { git = "http://github.com/privacy-scaling-explorations/halo2curves", package = "halo2curves" }
+itertools = "0.11.0"
+rand = "0.8.5"
+sha3 = "0.10.8"
+num-bigint = "0.4.4"
+rayon = { version = "1.8.0", optional = true }
+
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon"]
+sanity-check = []
