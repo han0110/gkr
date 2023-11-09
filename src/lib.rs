@@ -1,13 +1,14 @@
 use crate::{
     circuit::Circuit,
     poly::{evaluate, MultilinearPoly},
-    sum_check::{err_unmatched_evaluation, prove_sum_check, verify_sum_check, Quadratic},
+    sum_check::{err_unmatched_evaluation, prove_sum_check, verify_sum_check},
     transcript::{TranscriptRead, TranscriptWrite},
     util::{inner_product, izip, Field, Itertools},
 };
 use std::{array, borrow::Cow, io};
 
 pub mod circuit;
+pub mod etc;
 pub mod poly;
 pub mod sum_check;
 pub mod transcript;
@@ -30,7 +31,6 @@ pub fn prove_gkr<F: Field>(
     assert_eq!(values.len(), circuit.layers().len() + 1);
 
     let (output, inputs) = values.split_last().unwrap();
-    let inputs = inputs.iter().map(MultilinearPoly::new).collect_vec();
 
     if cfg!(feature = "sanity-check") {
         assert_eq!(evaluate(output, r_g), output_r_g);
@@ -45,19 +45,20 @@ pub fn prove_gkr<F: Field>(
         } else {
             array::from_fn(|_| transcript.squeeze_challenge())
         };
+        let input = MultilinearPoly::new(input.as_slice().into());
         let eq_r_g_prime = layer.eq_r_g_prime(&r_gs, &alphas);
         let (claim, r_x_0, input_r_x_0) = {
             let claim = inner_product(&alphas, &output_evals);
-            let [h_0, h_1] = layer.phase_1_polys(&input, &eq_r_g_prime);
-            let polys = [Cow::Owned(h_0), Cow::Owned(h_1), Cow::Borrowed(&input)];
-            let (claim, r_x_0, evals) = prove_sum_check::<_, Quadratic>(claim, polys, transcript)?;
+            let [f_0, f_1] = layer.phase_1_polys(&input, &eq_r_g_prime);
+            let polys = [Cow::Owned(f_0), Cow::Owned(f_1), Cow::Borrowed(&input)];
+            let (claim, r_x_0, evals) = prove_sum_check(layer, claim, polys, transcript)?;
             transcript.write_felt(&evals[2])?;
             (claim, r_x_0, evals[2])
         };
         let (r_x_1, input_r_x_1) = {
-            let [h_0, h_1] = layer.phase_2_polys(&eq_r_g_prime, &r_x_0, &input_r_x_0);
-            let polys = [h_0, h_1, input].map(Cow::Owned);
-            let (_, r_x_1, evals) = prove_sum_check::<_, Quadratic>(claim, polys, transcript)?;
+            let [f_0, f_1] = layer.phase_2_polys(&eq_r_g_prime, &r_x_0, &input_r_x_0);
+            let polys = [f_0, f_1, input].map(Cow::Owned);
+            let (_, r_x_1, evals) = prove_sum_check(layer, claim, polys, transcript)?;
             transcript.write_felt(&evals[2])?;
             (r_x_1, evals[2])
         };
@@ -88,12 +89,12 @@ pub fn verify_gkr<F: Field>(
         let (claim, r_x_0, input_r_x_0) = {
             let claim = inner_product(&alphas, &output_evals);
             let (claim, r_x_0) =
-                verify_sum_check::<_, Quadratic>(claim, layer.log2_input_len(), transcript)?;
+                verify_sum_check(layer, claim, layer.log2_input_len(), transcript)?;
             (claim, r_x_0, transcript.read_felt()?)
         };
         let (claim, r_x_1, input_r_x_1) = {
             let (claim, r_x_1) =
-                verify_sum_check::<_, Quadratic>(claim, layer.log2_input_len(), transcript)?;
+                verify_sum_check(layer, claim, layer.log2_input_len(), transcript)?;
             (claim, r_x_1, transcript.read_felt()?)
         };
         let r_xs = [r_x_0, r_x_1];

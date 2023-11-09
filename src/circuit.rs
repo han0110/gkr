@@ -1,9 +1,12 @@
 use crate::{
     poly::{eq_eval, eq_poly, MultilinearPoly},
+    sum_check::Function,
+    transcript::{TranscriptRead, TranscriptWrite},
     util::{
         chain, div_ceil, izip, izip_eq, num_threads, parallelize, parallelize_iter, Field,
         Itertools,
     },
+    Error,
 };
 use std::{array, collections::HashMap, iter};
 
@@ -191,11 +194,11 @@ impl<F: Field> Layer<F> {
         );
 
         let buf = (0..2).map(|idx| buf.iter().map(move |buf| &buf[idx]));
-        let mut hs = array::from_fn(|_| vec![F::ZERO; self.input_len()]);
-        parallelize_iter(izip_eq!(&mut hs, buf), |(h, buf)| {
+        let mut fs = array::from_fn(|_| vec![F::ZERO; self.input_len()]);
+        parallelize_iter(izip_eq!(&mut fs, buf), |(h, buf)| {
             buf.flatten().for_each(|(b, value)| h[*b] += value)
         });
-        hs.map(MultilinearPoly::new)
+        fs.map(|f| MultilinearPoly::new(f.into()))
     }
 
     pub fn evaluate(
@@ -210,7 +213,7 @@ impl<F: Field> Layer<F> {
         let [eq_r_g_0, eq_r_g_1] = array::from_fn(|idx| eq_poly(r_g_los[idx], alphas[idx]));
         let [eq_r_x_0, eq_r_x_1] = array::from_fn(|idx| eq_poly(r_x_los[idx], F::ONE));
 
-        let s = {
+        let [w_0, w_1, w_2] = {
             let mut lo = [[F::ZERO; 2]; 3];
             self.gates.iter().enumerate().for_each(|(b_g, gate)| {
                 let common = [
@@ -234,7 +237,7 @@ impl<F: Field> Layer<F> {
             lo.map(|lo| F::sum((0..2).map(|idx| lo[idx] * hi[idx])))
         };
 
-        s[0] + s[1] * input_r_x_0 + s[2] * input_r_x_0 * input_r_x_1
+        w_0 + w_1 * input_r_x_0 + w_2 * input_r_x_0 * input_r_x_1
     }
 
     fn r_g_lo_hi<'a>(&self, r_gs: &'a [Vec<F>; 2]) -> ([&'a [F]; 2], [&'a [F]; 2]) {
@@ -250,6 +253,63 @@ impl<F: Field> Layer<F> {
             array::from_fn(|idx| &rs[idx][..mid]),
             array::from_fn(|idx| &rs[idx][mid..]),
         )
+    }
+}
+
+impl<F: Field> Function<F> for Layer<F> {
+    fn degree(&self) -> usize {
+        2
+    }
+
+    fn compute_sum(&self, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F> {
+        assert_eq!(polys.len(), 3);
+
+        if cfg!(feature = "sanity-check") {
+            let polys = polys.iter().map(|poly| poly.as_slice()).collect_vec();
+            assert_eq!(
+                claim,
+                F::sum(izip_eq!(polys[0], polys[1], polys[2]).map(|(a, b, c)| *a + *b * c))
+            )
+        }
+
+        let num_threads = num_threads().min(polys[0].len() >> 1);
+        let chunk_size = div_ceil(polys[0].len() >> 1, num_threads);
+
+        let mut partials = vec![[F::ZERO; 3]; num_threads];
+        parallelize_iter(
+            izip!(&mut partials, (0..).step_by(chunk_size << 1)),
+            |(partial, start)| {
+                let [a, b, c] = array::from_fn(|idx| polys[idx][start..].iter());
+                izip!(a.step_by(2), b.tuples(), c.tuples())
+                    .take(chunk_size)
+                    .for_each(|(a_lo, (b_lo, b_hi), (c_lo, c_hi))| {
+                        partial[0] += *a_lo + *b_lo * c_lo;
+                        partial[2] += (*b_hi - b_lo) * (*c_hi - c_lo);
+                    });
+            },
+        );
+
+        let mut sum = [F::ZERO; 3];
+        partials.iter().for_each(|partial| {
+            sum[0] += partial[0];
+            sum[2] += partial[2];
+        });
+        sum[1] = claim - sum[0].double() - sum[2];
+        sum.to_vec()
+    }
+
+    fn write_sum(&self, sum: &[F], transcript: &mut impl TranscriptWrite<F>) -> Result<(), Error> {
+        transcript.write_felt(&sum[0])?;
+        transcript.write_felt(&sum[2])?;
+        Ok(())
+    }
+
+    fn read_sum(&self, claim: F, transcript: &mut impl TranscriptRead<F>) -> Result<Vec<F>, Error> {
+        let mut sum = [F::ZERO; 3];
+        sum[0] = transcript.read_felt()?;
+        sum[2] = transcript.read_felt()?;
+        sum[1] = claim - sum[0].double() - sum[2];
+        Ok(sum.to_vec())
     }
 }
 
@@ -343,8 +403,6 @@ use {add_or_insert, maybe_mul};
 
 #[cfg(test)]
 pub mod test {
-    use std::iter;
-
     use crate::{
         circuit::{Circuit, Gate, Layer},
         util::{
@@ -354,6 +412,7 @@ pub mod test {
     };
     use halo2_curves::bn256::Fr;
     use rand::RngCore;
+    use std::iter;
 
     #[test]
     fn grand_product() {

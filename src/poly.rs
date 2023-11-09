@@ -16,8 +16,8 @@ impl<F> MultilinearPoly<F> {
 }
 
 impl<F: Clone> MultilinearPoly<F> {
-    pub fn new(evals: impl AsRef<[F]>) -> Self {
-        let evals = evals.as_ref();
+    pub fn new(evals: Cow<[F]>) -> Self {
+        let evals = evals.into_owned();
         let num_vars = if evals.is_empty() {
             0
         } else {
@@ -26,10 +26,7 @@ impl<F: Clone> MultilinearPoly<F> {
             num_vars
         };
 
-        Self {
-            evals: evals.to_vec(),
-            num_vars,
-        }
+        Self { evals, num_vars }
     }
 }
 
@@ -77,6 +74,7 @@ pub fn eq_poly<F: Field>(y: &[F], scalar: F) -> Vec<F> {
 
 pub fn eq_eval<F: Field, const N: usize>(rs: [&[F]; N]) -> F {
     match N {
+        2 => F::product(izip_eq!(rs[0], rs[1]).map(|(&x, &y)| (x * y).double() + F::ONE - x - y)),
         3 => F::product(
             izip_eq!(rs[0], rs[1], rs[2])
                 .map(|(&x, &y, &z)| F::ONE + x * (y + z - F::ONE) + y * (z - F::ONE) - z),
