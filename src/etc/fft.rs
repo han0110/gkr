@@ -7,8 +7,8 @@ use crate::{
     sum_check::{err_unmatched_evaluation, prove_sum_check, verify_sum_check, Function},
     transcript::{TranscriptRead, TranscriptWrite},
     util::{
-        chain, div_ceil, izip, izip_eq, num_threads, parallelize, parallelize_iter, Field,
-        Itertools, PrimeField,
+        chain, chunk_info, izip, izip_eq, parallelize, parallelize_iter, Field, Itertools,
+        PrimeField,
     },
     Error,
 };
@@ -175,10 +175,8 @@ impl<F: Field> Function<F> for Layer<F> {
             )
         }
 
-        let num_threads = num_threads().min(polys[0].len() >> 1);
-        let chunk_size = div_ceil(polys[0].len() >> 1, num_threads);
-
-        let mut partials = vec![[F::ZERO; 4]; num_threads];
+        let (chunk_size, num_chunks) = chunk_info(polys[0].len() >> 1);
+        let mut partials = vec![[F::ZERO; 4]; num_chunks];
         parallelize_iter(
             izip!(&mut partials, (0..).step_by(chunk_size << 1)),
             |(partial, start)| {

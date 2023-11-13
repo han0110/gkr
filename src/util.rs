@@ -1,6 +1,6 @@
 pub use halo2_curves::ff::{Field, PrimeField};
 pub use itertools::{chain, izip, Itertools};
-pub use parallel::{num_threads, parallelize, parallelize_iter};
+pub use parallel::{chunk_info, num_threads, parallelize, parallelize_iter};
 pub use rand::RngCore;
 
 pub fn div_ceil(dividend: usize, divisor: usize) -> usize {
@@ -38,12 +38,20 @@ macro_rules! izip_eq {
 pub(crate) use izip_eq;
 
 mod parallel {
+    use crate::util::div_ceil;
+
     pub fn num_threads() -> usize {
         #[cfg(feature = "parallel")]
         return rayon::current_num_threads();
 
         #[cfg(not(feature = "parallel"))]
         return 1;
+    }
+
+    pub fn chunk_info(num_tasks: usize) -> (usize, usize) {
+        let chunk_size = div_ceil(num_tasks, num_threads().min(num_tasks));
+        let num_chunks = div_ceil(num_tasks, chunk_size);
+        (chunk_size, num_chunks)
     }
 
     pub fn parallelize_iter<I, T, F>(iter: I, f: F)
@@ -71,14 +79,26 @@ mod parallel {
     {
         #[cfg(feature = "parallel")]
         {
-            use crate::util::div_ceil;
+            let num_tasks = v.len();
             let num_threads = num_threads();
-            let chunk_size = div_ceil(v.len(), num_threads);
-            if chunk_size < num_threads {
-                f((v, 0));
-            } else {
-                parallelize_iter(v.chunks_mut(chunk_size).zip((0..).step_by(chunk_size)), f);
-            }
+            let chunk_size_lo = num_tasks / num_threads;
+            let chunk_size_hi = chunk_size_lo + 1;
+            let mid = (num_tasks % num_threads) * chunk_size_hi;
+            let (v_hi, v_lo) = v.split_at_mut(mid);
+            let f = &f;
+
+            rayon::scope(|scope| {
+                if chunk_size_hi > 0 {
+                    for (idx, v) in v_hi.chunks_exact_mut(chunk_size_hi).enumerate() {
+                        scope.spawn(move |_| f((v, idx * chunk_size_hi)));
+                    }
+                }
+                if chunk_size_lo > 0 {
+                    for (idx, v) in v_lo.chunks_exact_mut(chunk_size_lo).enumerate() {
+                        scope.spawn(move |_| f((v, mid + idx * chunk_size_lo)));
+                    }
+                }
+            });
         }
 
         #[cfg(not(feature = "parallel"))]

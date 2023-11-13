@@ -2,10 +2,7 @@ use crate::{
     poly::{eq_eval, eq_poly, MultilinearPoly},
     sum_check::Function,
     transcript::{TranscriptRead, TranscriptWrite},
-    util::{
-        chain, div_ceil, izip, izip_eq, num_threads, parallelize, parallelize_iter, Field,
-        Itertools,
-    },
+    util::{chain, chunk_info, izip, izip_eq, parallelize, parallelize_iter, Field, Itertools},
     Error,
 };
 use std::{array, collections::HashMap, iter};
@@ -178,9 +175,8 @@ impl<F: Field> Layer<F> {
     where
         T: Fn(&mut [HashMap<usize, F>; 2], usize, usize, &Gate<F>) + Send + Sync,
     {
-        let num_threads = num_threads().min(self.output_len());
-        let chunk_size = div_ceil(self.output_len(), num_threads);
-        let mut buf = vec![Default::default(); num_threads];
+        let (chunk_size, num_chunks) = chunk_info(self.output_len());
+        let mut buf = vec![Default::default(); num_chunks];
         parallelize_iter(
             izip!(&mut buf, (0..).step_by(chunk_size)),
             |(buf, start)| {
@@ -272,10 +268,8 @@ impl<F: Field> Function<F> for Layer<F> {
             )
         }
 
-        let num_threads = num_threads().min(polys[0].len() >> 1);
-        let chunk_size = div_ceil(polys[0].len() >> 1, num_threads);
-
-        let mut partials = vec![[F::ZERO; 3]; num_threads];
+        let (chunk_size, num_chunks) = chunk_info(polys[0].len() >> 1);
+        let mut partials = vec![[F::ZERO; 3]; num_chunks];
         parallelize_iter(
             izip!(&mut partials, (0..).step_by(chunk_size << 1)),
             |(partial, start)| {
