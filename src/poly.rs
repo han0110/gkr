@@ -1,6 +1,5 @@
-use crate::util::{
-    div_ceil, izip, izip_eq, num_threads, parallelize, parallelize_iter, Field, Itertools,
-};
+use crate::util::{izip, izip_eq, izip_par, Field, Itertools};
+use rayon::prelude::*;
 use std::{borrow::Cow, mem, ops::Deref};
 
 #[derive(Clone, Debug)]
@@ -48,32 +47,25 @@ impl<F> Deref for MultilinearPoly<F> {
 }
 
 pub fn eq_poly<F: Field>(y: &[F], scalar: F) -> Vec<F> {
-    if scalar.is_zero_vartime() {
-        return vec![F::ZERO; 1 << y.len()];
-    }
+    eq_expand(&[scalar], y)
+}
 
-    let expand = |next: &mut [F], buf: &[F], y_i: &F| {
-        izip!(next.chunks_mut(2), buf).for_each(|(next, buf)| {
-            next[1] = *buf * y_i;
-            next[0] = *buf - next[1];
-        })
-    };
+pub fn eq_expand<F: Field>(poly: &[F], y: &[F]) -> Vec<F> {
+    assert!(poly.len().is_power_of_two());
 
-    let mut buf = vec![scalar];
-    for y_i in y.iter().rev() {
-        let mut next = vec![F::ZERO; 2 * buf.len()];
-        let chunk_size = div_ceil(buf.len(), num_threads());
-        parallelize_iter(
-            izip!(next.chunks_mut(chunk_size << 1), buf.chunks(chunk_size)),
-            |(next, buf)| expand(next, buf, y_i),
-        );
-        buf = next;
+    let mut buf = vec![F::ZERO; poly.len() << y.len()];
+    buf[..poly.len()].copy_from_slice(poly);
+    for (idx, y_i) in izip!(poly.len().ilog2().., y) {
+        let (lo, hi) = buf[..2 << idx].split_at_mut(1 << idx);
+        izip_par!(hi as &mut [_], lo as &[_]).for_each(|(hi, lo)| *hi = *lo * y_i);
+        izip_par!(lo as &mut [_], hi as &[_]).for_each(|(lo, hi)| *lo -= hi);
     }
     buf
 }
 
-pub fn eq_eval<F: Field, const N: usize>(rs: [&[F]; N]) -> F {
-    match N {
+pub fn eq_eval<'a, F: Field>(rs: impl IntoIterator<Item = &'a [F]>) -> F {
+    let rs = rs.into_iter().collect_vec();
+    match rs.len() {
         2 => F::product(izip_eq!(rs[0], rs[1]).map(|(&x, &y)| (x * y).double() + F::ONE - x - y)),
         3 => F::product(
             izip_eq!(rs[0], rs[1], rs[2])
@@ -105,10 +97,6 @@ fn merge_into<F: Field>(target: &mut Vec<F>, evals: &[F], x_i: &F) {
     assert!(target.capacity() >= evals.len() >> 1);
     target.resize(evals.len() >> 1, F::ZERO);
 
-    parallelize(target, |(target, start)| {
-        let x_i = *x_i;
-        izip!(target, evals[start << 1..].iter().tuples()).for_each(|(target, (eval_0, eval_1))| {
-            *target = (*eval_1 - eval_0) * x_i + eval_0;
-        })
-    });
+    izip_par!(target, izip_par!(&evals[0..], &evals[1..]).step_by(2))
+        .for_each(|(target, (eval_0, eval_1))| *target = (*eval_1 - eval_0) * x_i + eval_0);
 }

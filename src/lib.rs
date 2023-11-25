@@ -5,7 +5,7 @@ use crate::{
     transcript::{TranscriptRead, TranscriptWrite},
     util::{inner_product, izip, Field, Itertools},
 };
-use std::{array, borrow::Cow, io};
+use std::{borrow::Cow, io};
 
 pub mod circuit;
 pub mod etc;
@@ -36,37 +36,40 @@ pub fn prove_gkr<F: Field>(
         assert_eq!(evaluate(output, r_g), output_r_g);
     }
 
-    let mut r_gs = [r_g.to_vec(), vec![F::ZERO; r_g.len()]];
-    let mut output_evals = [output_r_g, Default::default()];
+    let mut r_gs = vec![r_g.to_vec()];
+    let mut output_r_gs = vec![output_r_g];
 
     for (layer, input) in izip!(circuit.layers(), inputs).rev() {
-        let alphas = if output_evals[1].is_zero_vartime() {
-            [F::ONE, F::ZERO]
+        let alphas = if output_r_gs.len() == 1 {
+            vec![F::ONE]
         } else {
-            array::from_fn(|_| transcript.squeeze_challenge())
+            transcript.squeeze_challenges(output_r_gs.len())
         };
+        let eq_r_gs = layer.eq_r_gs(&r_gs, &alphas);
+        let eq_r_g_prime = layer.eq_r_g_prime(&eq_r_gs);
         let input = MultilinearPoly::new(input.as_slice().into());
-        let eq_r_g_prime = layer.eq_r_g_prime(&r_gs, &alphas);
         let (claim, r_x_0, input_r_x_0) = {
-            let claim = inner_product(&alphas, &output_evals);
-            let [f_0, f_1] = layer.phase_1_polys(&input, &eq_r_g_prime);
-            let polys = [Cow::Owned(f_0), Cow::Owned(f_1), Cow::Borrowed(&input)];
+            let claim = inner_product::<F>(&alphas, &output_r_gs) - layer.phase_1_eval(&eq_r_gs);
+            let f = layer.phase_1_poly(&input, &eq_r_g_prime);
+            let polys = [Cow::Owned(f), Cow::Borrowed(&input)];
             let (claim, r_x_0, evals) = prove_sum_check(layer, claim, polys, transcript)?;
-            transcript.write_felt(&evals[2])?;
-            (claim, r_x_0, evals[2])
+            transcript.write_felt(&evals[1])?;
+            (claim, r_x_0, evals[1])
         };
+        let eq_r_x_0 = layer.eq_r_x(&r_x_0, input_r_x_0);
         let (r_x_1, input_r_x_1) = {
-            let [f_0, f_1] = layer.phase_2_polys(&eq_r_g_prime, &r_x_0, &input_r_x_0);
-            let polys = [f_0, f_1, input].map(Cow::Owned);
+            let claim = claim - layer.phase_2_eval(&eq_r_gs, &eq_r_x_0);
+            let f = layer.phase_2_poly(&eq_r_g_prime, &eq_r_x_0);
+            let polys = [f, input].map(Cow::Owned);
             let (_, r_x_1, evals) = prove_sum_check(layer, claim, polys, transcript)?;
-            transcript.write_felt(&evals[2])?;
-            (r_x_1, evals[2])
+            transcript.write_felt(&evals[1])?;
+            (r_x_1, evals[1])
         };
-        r_gs = [r_x_0, r_x_1];
-        output_evals = [input_r_x_0, input_r_x_1];
+        r_gs = vec![r_x_0, r_x_1];
+        output_r_gs = vec![input_r_x_0, input_r_x_1];
     }
 
-    Ok(izip!(r_gs, output_evals).collect_vec().try_into().unwrap())
+    Ok(izip!(r_gs, output_r_gs).collect_vec().try_into().unwrap())
 }
 
 pub fn verify_gkr<F: Field>(
@@ -77,36 +80,37 @@ pub fn verify_gkr<F: Field>(
 ) -> Result<[(Vec<F>, F); 2], Error> {
     assert!(!circuit.layers().is_empty());
 
-    let mut r_gs = [r_g.to_vec(), vec![F::ZERO; r_g.len()]];
-    let mut output_evals = [output_r_g, Default::default()];
+    let mut r_gs = vec![r_g.to_vec()];
+    let mut output_r_gs = vec![output_r_g];
 
     for layer in circuit.layers().iter().rev() {
-        let alphas = if output_evals[1].is_zero_vartime() {
-            [F::ONE, F::ZERO]
+        let alphas = if output_r_gs.len() == 1 {
+            vec![F::ONE]
         } else {
-            array::from_fn(|_| transcript.squeeze_challenge())
+            transcript.squeeze_challenges(output_r_gs.len())
         };
+        let eq_r_gs = layer.eq_r_gs(&r_gs, &alphas);
+        let num_vars = layer.log2_input_len();
         let (claim, r_x_0, input_r_x_0) = {
-            let claim = inner_product(&alphas, &output_evals);
-            let (claim, r_x_0) =
-                verify_sum_check(layer, claim, layer.log2_input_len(), transcript)?;
+            let claim = inner_product::<F>(&alphas, &output_r_gs) - layer.phase_1_eval(&eq_r_gs);
+            let (claim, r_x_0) = verify_sum_check(layer, claim, num_vars, transcript)?;
             (claim, r_x_0, transcript.read_felt()?)
         };
+        let eq_r_x_0 = layer.eq_r_x(&r_x_0, input_r_x_0);
         let (claim, r_x_1, input_r_x_1) = {
-            let (claim, r_x_1) =
-                verify_sum_check(layer, claim, layer.log2_input_len(), transcript)?;
+            let claim = claim - layer.phase_2_eval(&eq_r_gs, &eq_r_x_0);
+            let (claim, r_x_1) = verify_sum_check(layer, claim, num_vars, transcript)?;
             (claim, r_x_1, transcript.read_felt()?)
         };
-        let r_xs = [r_x_0, r_x_1];
-        let input_evals = [input_r_x_0, input_r_x_1];
-        if claim != layer.evaluate(&r_gs, &alphas, &r_xs, &input_evals) {
+        let eq_r_x_1 = layer.eq_r_x(&r_x_1, input_r_x_1);
+        if claim != layer.final_eval(&eq_r_gs, &eq_r_x_0, &eq_r_x_1) {
             return Err(err_unmatched_evaluation());
         }
-        r_gs = r_xs;
-        output_evals = input_evals;
+        r_gs = vec![r_x_0, r_x_1];
+        output_r_gs = vec![input_r_x_0, input_r_x_1];
     }
 
-    Ok(izip!(r_gs, output_evals).collect_vec().try_into().unwrap())
+    Ok(izip!(r_gs, output_r_gs).collect_vec().try_into().unwrap())
 }
 
 #[cfg(test)]

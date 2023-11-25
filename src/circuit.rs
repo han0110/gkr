@@ -1,11 +1,15 @@
 use crate::{
-    poly::{eq_eval, eq_poly, MultilinearPoly},
-    sum_check::Function,
+    poly::{eq_eval, eq_expand, eq_poly, MultilinearPoly},
+    sum_check::SumCheckFunction,
     transcript::{TranscriptRead, TranscriptWrite},
-    util::{chain, chunk_info, izip, izip_eq, parallelize, parallelize_iter, Field, Itertools},
+    util::{
+        chain, hadamard_add, inner_product, izip, izip_eq, izip_par, AdditiveArray, AdditiveVec,
+        Field, Itertools,
+    },
     Error,
 };
-use std::{array, collections::HashMap, iter};
+use rayon::prelude::*;
+use std::{collections::HashMap, iter, ops::Deref};
 
 #[derive(Clone, Debug)]
 pub struct Circuit<F> {
@@ -105,191 +109,197 @@ impl<F: Field> Layer<F> {
     pub fn output(&self, input: &[F]) -> Vec<F> {
         assert_eq!(input.len(), self.input_len());
 
-        let mut output = vec![F::ZERO; self.output_len()];
-        parallelize(&mut output, |(output, start)| {
-            let gates = self.gates.iter().cycle().skip(start % self.gates.len());
-            izip!(start.., output, gates).for_each(|(b_g, output, gate)| {
+        (0..self.output_len())
+            .into_par_iter()
+            .map(|b_g| {
                 let b_off = (b_g >> self.log2_sub_output_len()) << self.log2_sub_input_len();
-                if let Some(w_0) = gate.w_0 {
-                    *output += w_0
-                }
-                gate.w_1(b_off)
-                    .for_each(|(s, b_0)| *output += maybe_mul!(s, input[b_0]));
-                gate.w_2(b_off)
-                    .for_each(|(s, b_0, b_1)| *output += maybe_mul!(s, input[b_0] * input[b_1]));
-            });
-        });
-        output
+                let gate = &self.gates[b_g % self.gates.len()];
+                chain![
+                    gate.w_0,
+                    gate.w_1(b_off).map(|(s, b_0)| maybe_mul!(s, input[b_0])),
+                    gate.w_2(b_off)
+                        .map(|(s, b_0, b_1)| maybe_mul!(s, input[b_0] * input[b_1])),
+                ]
+                .sum()
+            })
+            .collect()
     }
 
-    pub fn eq_r_g_prime(&self, r_gs: &[Vec<F>; 2], alphas: &[F; 2]) -> Vec<F> {
-        let mut eq_r_g_0 = eq_poly(&r_gs[0], alphas[0]);
-        if alphas[1].is_zero_vartime() {
-            eq_r_g_0
-        } else {
-            let eq_r_g_1 = eq_poly(&r_gs[1], alphas[1]);
-            parallelize(&mut eq_r_g_0, |(eq_r_g_0, start)| {
-                izip!(eq_r_g_0, &eq_r_g_1[start..]).for_each(|(lhs, rhs)| *lhs += rhs)
-            });
-            eq_r_g_0
-        }
+    pub fn eq_r_gs<'a>(&self, r_gs: &'a [Vec<F>], alphas: &[F]) -> Vec<PartialEqPoly<'a, F>> {
+        izip!(r_gs, alphas)
+            .map(|(r_g, alpha)| PartialEqPoly::new(r_g, self.log2_sub_output_len, *alpha))
+            .collect()
     }
 
-    pub fn phase_1_polys(&self, input: &[F], eq_r_g_prime: &[F]) -> [MultilinearPoly<F>; 2] {
-        self.phase_i_polys(&|buf, b_g, b_off, gate| {
-            let common = eq_r_g_prime[b_g];
-            if let Some(w_0) = gate.w_0 {
-                add_or_insert!(buf[0], b_off, w_0 * common)
-            }
+    pub fn eq_r_x<'a>(&self, r_x: &'a [F], input_r_x: F) -> PartialEqPoly<'a, F> {
+        PartialEqPoly::new(r_x, self.log2_sub_input_len, input_r_x)
+    }
+
+    pub fn eq_r_g_prime(&self, eq_r_gs: &[PartialEqPoly<F>]) -> Vec<F> {
+        eq_r_gs
+            .iter()
+            .map(PartialEqPoly::expand)
+            .reduce(|acc, item| hadamard_add(acc.into(), &item))
+            .unwrap()
+    }
+
+    pub fn phase_1_poly(&self, input: &[F], eq_r_g_prime: &[F]) -> MultilinearPoly<F> {
+        self.phase_i_poly(&|buf, b_g, b_off, gate| {
             gate.w_1(b_off).for_each(|(s, b_0)| {
-                add_or_insert!(buf[1], b_0, maybe_mul!(s, common));
+                add_or_insert!(buf, b_0, maybe_mul!(s, eq_r_g_prime[b_g]));
             });
             gate.w_2(b_off).for_each(|(s, b_0, b_1)| {
-                add_or_insert!(buf[1], b_0, maybe_mul!(s, common * input[b_1]))
+                add_or_insert!(buf, b_0, maybe_mul!(s, eq_r_g_prime[b_g] * input[b_1]))
             });
         })
     }
 
-    pub fn phase_2_polys(
+    pub fn phase_2_poly(
         &self,
         eq_r_g_prime: &[F],
-        r_x_0: &[F],
-        input_r_x_0: &F,
-    ) -> [MultilinearPoly<F>; 2] {
-        let eq_r_x_0 = eq_poly(r_x_0, F::ONE);
-        self.phase_i_polys(&|buf, b_g, b_off, gate| {
-            let common = eq_r_g_prime[b_g] * input_r_x_0;
-            if let Some(w_0) = gate.w_0 {
-                add_or_insert!(buf[0], b_off, w_0 * eq_r_g_prime[b_g] * eq_r_x_0[b_off])
-            }
-            gate.w_1(b_off).for_each(|(s, b_0)| {
-                add_or_insert!(buf[0], b_off, maybe_mul!(s, common * eq_r_x_0[b_0]))
-            });
+        eq_r_x_0: &PartialEqPoly<F>,
+    ) -> MultilinearPoly<F> {
+        let eq_r_x_0 = eq_r_x_0.expand();
+        self.phase_i_poly(&|buf, b_g, b_off, gate| {
             gate.w_2(b_off).for_each(|(s, b_0, b_1)| {
-                add_or_insert!(buf[1], b_1, maybe_mul!(s, common * eq_r_x_0[b_0]))
+                add_or_insert!(buf, b_1, maybe_mul!(s, eq_r_g_prime[b_g] * eq_r_x_0[b_0]))
             });
         })
     }
 
-    fn phase_i_polys<T>(&self, f: &T) -> [MultilinearPoly<F>; 2]
+    fn phase_i_poly<T>(&self, f: &T) -> MultilinearPoly<F>
     where
-        T: Fn(&mut [HashMap<usize, F>; 2], usize, usize, &Gate<F>) + Send + Sync,
+        T: Fn(&mut HashMap<usize, F>, usize, usize, &Gate<F>) + Send + Sync,
     {
-        let (chunk_size, num_chunks) = chunk_info(self.output_len());
-        let mut buf = vec![Default::default(); num_chunks];
-        parallelize_iter(
-            izip!(&mut buf, (0..).step_by(chunk_size)),
-            |(buf, start)| {
-                let b_gs = start..(start + chunk_size).min(self.output_len());
-                let gates = self.gates.iter().cycle().skip(start % self.gates.len());
-                izip!(b_gs, gates).for_each(|(b_g, gate)| {
-                    let b_off = (b_g >> self.log2_sub_output_len()) << self.log2_sub_input_len();
-                    f(buf, b_g, b_off, gate)
-                })
-            },
-        );
+        let buf = (0..self.output_len())
+            .into_par_iter()
+            .fold_with(HashMap::new(), |mut buf, b_g| {
+                let b_off = (b_g >> self.log2_sub_output_len()) << self.log2_sub_input_len();
+                let gate = &self.gates[b_g % self.gates.len()];
+                f(&mut buf, b_g, b_off, gate);
+                buf
+            })
+            .reduce_with(|mut acc, item| {
+                item.iter().for_each(|(b, v)| add_or_insert!(acc, *b, *v));
+                acc
+            })
+            .unwrap();
 
-        let buf = (0..2).map(|idx| buf.iter().map(move |buf| &buf[idx]));
-        let mut fs = array::from_fn(|_| vec![F::ZERO; self.input_len()]);
-        parallelize_iter(izip_eq!(&mut fs, buf), |(h, buf)| {
-            buf.flatten().for_each(|(b, value)| h[*b] += value)
-        });
-        fs.map(|f| MultilinearPoly::new(f.into()))
+        let mut f = vec![F::ZERO; self.input_len()];
+        buf.iter().for_each(|(b, value)| f[*b] += value);
+        MultilinearPoly::new(f.into())
     }
 
-    pub fn evaluate(
+    pub fn phase_1_eval(&self, eq_r_gs: &[PartialEqPoly<F>]) -> F {
+        izip_par!(0..self.gates.len(), &self.gates)
+            .filter(|(_, gate)| gate.w_0.is_some())
+            .map(|(b_g, gate)| gate.w_0.unwrap() * F::sum(eq_r_gs.iter().map(|eq_r_g| eq_r_g[b_g])))
+            .sum::<F>()
+    }
+
+    pub fn phase_2_eval(&self, eq_r_gs: &[PartialEqPoly<F>], eq_r_x_0: &PartialEqPoly<F>) -> F {
+        self.phase_i_eval(eq_r_gs, &[eq_r_x_0], &|gate| {
+            gate.w_1
+                .iter()
+                .map(|(s, b_0)| maybe_mul!(s, eq_r_x_0[*b_0]))
+                .sum()
+        })
+    }
+
+    pub fn final_eval(
         &self,
-        r_gs: &[Vec<F>; 2],
-        alphas: &[F; 2],
-        r_xs: &[Vec<F>; 2],
-        [input_r_x_0, input_r_x_1]: &[F; 2],
+        eq_r_gs: &[PartialEqPoly<F>],
+        eq_r_x_0: &PartialEqPoly<F>,
+        eq_r_x_1: &PartialEqPoly<F>,
     ) -> F {
-        let (r_g_los, r_g_his) = self.r_g_lo_hi(r_gs);
-        let (r_x_los, r_x_his) = self.r_x_lo_hi(r_xs);
-        let [eq_r_g_0, eq_r_g_1] = array::from_fn(|idx| eq_poly(r_g_los[idx], alphas[idx]));
-        let [eq_r_x_0, eq_r_x_1] = array::from_fn(|idx| eq_poly(r_x_los[idx], F::ONE));
-
-        let [w_0, w_1, w_2] = {
-            let mut lo = [[F::ZERO; 2]; 3];
-            self.gates.iter().enumerate().for_each(|(b_g, gate)| {
-                let common = [
-                    gate.w_0.map(|w_0| w_0 * eq_r_x_0[0] * eq_r_x_1[0]),
-                    gate.w_1(0)
-                        .map(|(s, b_0)| maybe_mul!(s, eq_r_x_0[b_0]))
-                        .reduce(|acc, v| acc + v)
-                        .map(|acc| acc * eq_r_x_1[0]),
-                    gate.w_2(0)
-                        .map(|(s, b_0, b_1)| maybe_mul!(s, eq_r_x_0[b_0] * eq_r_x_1[b_1]))
-                        .reduce(|acc, v| acc + v),
-                ];
-                izip!(&mut lo, common).for_each(|(lo, common)| {
-                    if let Some(common) = common {
-                        lo[0] += common * eq_r_g_0[b_g];
-                        (!alphas[1].is_zero_vartime()).then(|| lo[1] += common * eq_r_g_1[b_g]);
-                    }
-                })
-            });
-            let hi = r_g_his.map(|r_g_hi| eq_eval([r_g_hi, r_x_his[0], r_x_his[1]]));
-            lo.map(|lo| F::sum((0..2).map(|idx| lo[idx] * hi[idx])))
-        };
-
-        w_0 + w_1 * input_r_x_0 + w_2 * input_r_x_0 * input_r_x_1
+        self.phase_i_eval(eq_r_gs, &[eq_r_x_0, eq_r_x_1], &|gate| {
+            gate.w_2
+                .iter()
+                .map(|(s, b_0, b_1)| maybe_mul!(s, eq_r_x_0[*b_0] * eq_r_x_1[*b_1]))
+                .sum()
+        })
     }
 
-    fn r_g_lo_hi<'a>(&self, r_gs: &'a [Vec<F>; 2]) -> ([&'a [F]; 2], [&'a [F]; 2]) {
-        self.r_lo_hi(r_gs, self.log2_sub_output_len)
-    }
-
-    fn r_x_lo_hi<'a>(&self, r_xs: &'a [Vec<F>; 2]) -> ([&'a [F]; 2], [&'a [F]; 2]) {
-        self.r_lo_hi(r_xs, self.log2_sub_input_len)
-    }
-
-    fn r_lo_hi<'a>(&self, rs: &'a [Vec<F>; 2], mid: usize) -> ([&'a [F]; 2], [&'a [F]; 2]) {
-        (
-            array::from_fn(|idx| &rs[idx][..mid]),
-            array::from_fn(|idx| &rs[idx][mid..]),
-        )
+    pub fn phase_i_eval<T>(
+        &self,
+        eq_r_gs: &[PartialEqPoly<F>],
+        eq_r_xs: &[&PartialEqPoly<F>],
+        f: &T,
+    ) -> F
+    where
+        T: Fn(&Gate<F>) -> F + Send + Sync,
+    {
+        let evals = izip_par!(0..self.gates.len(), &self.gates)
+            .fold_with(AdditiveVec::new(eq_r_gs.len()), |mut evals, (b_g, gate)| {
+                let v = f(gate);
+                izip!(&mut evals[..], eq_r_gs).for_each(|(eval, eq_r_g)| *eval += v * eq_r_g[b_g]);
+                evals
+            })
+            .reduce_with(|acc, item| acc + item)
+            .unwrap();
+        let eq_r_hi_evals = eq_r_gs
+            .iter()
+            .map(|eq_r_g| chain![[eq_r_g.r_hi], eq_r_xs.iter().map(|eq_r_x| eq_r_x.r_hi)])
+            .map(eq_eval);
+        inner_product(eq_r_hi_evals, &evals[..])
     }
 }
 
-impl<F: Field> Function<F> for Layer<F> {
+pub struct PartialEqPoly<'a, F> {
+    r_hi: &'a [F],
+    evals: Vec<F>,
+}
+
+impl<'a, F> Deref for PartialEqPoly<'a, F> {
+    type Target = Vec<F>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.evals
+    }
+}
+
+impl<'a, F: Field> PartialEqPoly<'a, F> {
+    fn new(r: &'a [F], mid: usize, scalar: F) -> Self {
+        let (r_lo, r_hi) = r.split_at(mid);
+        PartialEqPoly {
+            r_hi,
+            evals: eq_poly(r_lo, scalar),
+        }
+    }
+
+    fn expand(&self) -> Vec<F> {
+        eq_expand(&self.evals, self.r_hi)
+    }
+}
+
+impl<F: Field> SumCheckFunction<F> for Layer<F> {
     fn degree(&self) -> usize {
         2
     }
 
     fn compute_sum(&self, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F> {
-        assert_eq!(polys.len(), 3);
+        assert_eq!(polys.len(), 2);
 
         if cfg!(feature = "sanity-check") {
             let polys = polys.iter().map(|poly| poly.as_slice()).collect_vec();
             assert_eq!(
                 claim,
-                F::sum(izip_eq!(polys[0], polys[1], polys[2]).map(|(a, b, c)| *a + *b * c))
+                F::sum(izip_eq!(polys[0], polys[1]).map(|(a, b)| *a * b))
             )
         }
 
-        let (chunk_size, num_chunks) = chunk_info(polys[0].len() >> 1);
-        let mut partials = vec![[F::ZERO; 3]; num_chunks];
-        parallelize_iter(
-            izip!(&mut partials, (0..).step_by(chunk_size << 1)),
-            |(partial, start)| {
-                let [a, b, c] = array::from_fn(|idx| polys[idx][start..].iter());
-                izip!(a.step_by(2), b.tuples(), c.tuples())
-                    .take(chunk_size)
-                    .for_each(|(a_lo, (b_lo, b_hi), (c_lo, c_hi))| {
-                        partial[0] += *a_lo + *b_lo * c_lo;
-                        partial[2] += (*b_hi - b_lo) * (*c_hi - c_lo);
-                    });
-            },
-        );
+        let AdditiveArray([coeff_0, coeff_2]) =
+            izip_par!(&polys[0][..], &polys[0][1..], &polys[1][..], &polys[1][1..])
+                .step_by(2)
+                .fold_with(AdditiveArray::default(), |mut coeffs, values| {
+                    let (a_lo, a_hi, b_lo, b_hi) = values;
+                    coeffs[0] += *a_lo * b_lo;
+                    coeffs[1] += (*a_hi - a_lo) * (*b_hi - b_lo);
+                    coeffs
+                })
+                .sum();
 
-        let mut sum = [F::ZERO; 3];
-        partials.iter().for_each(|partial| {
-            sum[0] += partial[0];
-            sum[2] += partial[2];
-        });
-        sum[1] = claim - sum[0].double() - sum[2];
-        sum.to_vec()
+        vec![coeff_0, claim - coeff_0.double() - coeff_2, coeff_2]
     }
 
     fn write_sum(&self, sum: &[F], transcript: &mut impl TranscriptWrite<F>) -> Result<(), Error> {

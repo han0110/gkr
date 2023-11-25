@@ -4,15 +4,15 @@
 
 use crate::{
     poly::{eq_eval, eq_poly, evaluate, MultilinearPoly},
-    sum_check::{err_unmatched_evaluation, prove_sum_check, verify_sum_check, Function},
+    sum_check::{err_unmatched_evaluation, prove_sum_check, verify_sum_check, SumCheckFunction},
     transcript::{TranscriptRead, TranscriptWrite},
     util::{
-        chain, chunk_info, izip, izip_eq, parallelize, parallelize_iter, Field, Itertools,
-        PrimeField,
+        chain, chain_par, izip, izip_eq, izip_par, AdditiveArray, Field, Itertools, PrimeField,
     },
     Error,
 };
-use std::{array, borrow::Cow, iter};
+use rayon::prelude::*;
+use std::{borrow::Cow, iter};
 
 pub fn prove_fft_layer_wiring<F: PrimeField>(
     r_g: &[F],
@@ -93,13 +93,9 @@ pub fn fft_layer_init<F: PrimeField>(r_g: &[F]) -> Vec<Vec<F>> {
     for (i, r_g_i) in izip!(0..r_g.len(), r_g.iter()).rev() {
         let one_minus_r_g_i = F::ONE - r_g_i;
         let last = bufs.last().unwrap();
-        let mut buf = vec![F::ZERO; last.len() << 1];
-        parallelize(&mut buf, |(buf, start)| {
-            let last = last.iter().cycle().skip(start);
-            let omages = omegas.iter().step_by(1 << i).skip(start);
-            izip!(buf, last, omages)
-                .for_each(|(buf, last, omega)| *buf = (one_minus_r_g_i + *r_g_i * omega) * last)
-        });
+        let buf = izip_par!(chain_par![last, last], omegas.par_iter().step_by(1 << i))
+            .map(|(last, omega)| (one_minus_r_g_i + *r_g_i * omega) * last)
+            .collect();
         bufs.push(buf);
     }
     bufs
@@ -157,7 +153,7 @@ impl<F: PrimeField> Layer<F> {
     }
 }
 
-impl<F: Field> Function<F> for Layer<F> {
+impl<F: Field> SumCheckFunction<F> for Layer<F> {
     fn degree(&self) -> usize {
         3
     }
@@ -175,38 +171,37 @@ impl<F: Field> Function<F> for Layer<F> {
             )
         }
 
-        let (chunk_size, num_chunks) = chunk_info(polys[0].len() >> 1);
-        let mut partials = vec![[F::ZERO; 4]; num_chunks];
-        parallelize_iter(
-            izip!(&mut partials, (0..).step_by(chunk_size << 1)),
-            |(partial, start)| {
-                let [a, b, c] = array::from_fn(|idx| polys[idx][start..].iter());
-                izip!(a.tuples(), b.tuples(), c.tuples())
-                    .take(chunk_size)
-                    .for_each(|((a_lo, a_hi), (b_lo, b_hi), (c_lo, c_hi))| {
-                        partial[1] += *a_hi * b_hi * (self.one_minus_r_g_i + self.r_g_i * c_hi);
-                        let a_diff = *a_hi - a_lo;
-                        let b_diff = *b_hi - b_lo;
-                        let c_diff = *c_hi - c_lo;
-                        let mut a = *a_hi + a_diff;
-                        let mut b = *b_hi + b_diff;
-                        let mut c = *c_hi + c_diff;
-                        partial[2] += a * b * (self.one_minus_r_g_i + self.r_g_i * c);
-                        a += a_diff;
-                        b += b_diff;
-                        c += c_diff;
-                        partial[3] += a * b * (self.one_minus_r_g_i + self.r_g_i * c);
-                    });
-            },
-        );
+        let AdditiveArray([eval_1, eval_2, eval_3]) = izip_par!(
+            &polys[0][0..],
+            &polys[0][1..],
+            &polys[1][0..],
+            &polys[1][1..],
+            &polys[2][0..],
+            &polys[2][1..],
+        )
+        .step_by(2)
+        .fold_with(AdditiveArray::default(), |mut evals, values| {
+            let (a_lo, a_hi, b_lo, b_hi, c_lo, c_hi) = values;
+            let mut a = *a_hi;
+            let mut b = *b_hi;
+            let mut c = *c_hi;
+            let a_diff = a - a_lo;
+            let b_diff = b - b_lo;
+            let c_diff = c - c_lo;
+            evals[0] += a * b * (self.one_minus_r_g_i + self.r_g_i * c);
+            a += a_diff;
+            b += b_diff;
+            c += c_diff;
+            evals[1] += a * b * (self.one_minus_r_g_i + self.r_g_i * c);
+            a += a_diff;
+            b += b_diff;
+            c += c_diff;
+            evals[2] += a * b * (self.one_minus_r_g_i + self.r_g_i * c);
+            evals
+        })
+        .sum();
 
-        let mut evals = [F::ZERO; 4];
-        partials.iter().for_each(|partial| {
-            evals[1] += partial[1];
-            evals[2] += partial[2];
-            evals[3] += partial[3];
-        });
-        evals[0] = claim - evals[1];
+        let evals = [claim - eval_1, eval_1, eval_2, eval_3];
         self.interpolation_weights
             .map(|weights| F::sum(izip!(weights, &evals).map(|(weight, eval)| weight * eval)))
             .to_vec()

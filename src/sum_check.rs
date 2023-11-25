@@ -7,7 +7,7 @@ use crate::{
 use std::{borrow::Cow, fmt::Debug};
 
 pub fn prove_sum_check<'a, F: Field>(
-    g: &impl Function<F>,
+    g: &impl SumCheckFunction<F>,
     claim: F,
     polys: impl IntoIterator<Item = Cow<'a, MultilinearPoly<F>>>,
     transcript: &mut impl TranscriptWrite<F>,
@@ -41,7 +41,7 @@ pub fn prove_sum_check<'a, F: Field>(
 }
 
 pub fn verify_sum_check<F: Field>(
-    g: &impl Function<F>,
+    g: &impl SumCheckFunction<F>,
     claim: F,
     num_vars: usize,
     transcript: &mut impl TranscriptRead<F>,
@@ -70,7 +70,7 @@ pub fn err_unmatched_evaluation() -> Error {
     Error::InvalidSumCheck("Unmatched evaluation from SumCheck subclaim".to_string())
 }
 
-pub trait Function<F: Field>: Clone + Debug {
+pub trait SumCheckFunction<F>: Debug {
     fn degree(&self) -> usize;
 
     fn compute_sum(&self, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F>;
