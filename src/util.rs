@@ -2,11 +2,14 @@ use rayon::prelude::*;
 use std::{
     borrow::Borrow,
     borrow::Cow,
-    iter::Sum,
+    iter::{self, Sum},
     ops::{Add, AddAssign, Deref, DerefMut},
 };
 
-pub use halo2_curves::ff::{Field, PrimeField};
+pub use halo2_curves::{
+    ff::{Field, PrimeField},
+    fft::best_fft as fft,
+};
 pub use itertools::{chain, izip, Itertools};
 pub use rand_core::RngCore;
 
@@ -23,6 +26,14 @@ pub fn inner_product<F: Field>(
     rhs: impl IntoIterator<Item = impl Borrow<F>>,
 ) -> F {
     F::sum(izip_eq!(lhs, rhs).map(|(lhs, rhs)| *lhs.borrow() * rhs.borrow()))
+}
+
+pub fn powers<F: Field>(base: F) -> impl Iterator<Item = F> {
+    iter::successors(Some(F::ONE), move |power| Some(base * power))
+}
+
+pub fn squares<F: Field>(base: F) -> impl Iterator<Item = F> {
+    iter::successors(Some(base), move |square| Some(square.square()))
 }
 
 pub fn hadamard_add<F: Field>(lhs: Cow<[F]>, rhs: &[F]) -> Vec<F> {

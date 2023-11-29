@@ -6,11 +6,14 @@ use crate::{
 };
 use std::{borrow::Cow, fmt::Debug};
 
+pub mod generic;
+pub mod quadratic;
+
 pub fn prove_sum_check<'a, F: Field>(
     g: &impl SumCheckFunction<F>,
     claim: F,
     polys: impl IntoIterator<Item = Cow<'a, MultilinearPoly<F>>>,
-    transcript: &mut impl TranscriptWrite<F>,
+    transcript: &mut (impl TranscriptWrite<F> + ?Sized),
 ) -> Result<(F, Vec<F>, Vec<F>), Error> {
     let mut polys = polys.into_iter().map(Cow::into_owned).collect_vec();
     assert!(!polys.is_empty());
@@ -44,7 +47,7 @@ pub fn verify_sum_check<F: Field>(
     g: &impl SumCheckFunction<F>,
     claim: F,
     num_vars: usize,
-    transcript: &mut impl TranscriptRead<F>,
+    transcript: &mut (impl TranscriptRead<F> + ?Sized),
 ) -> Result<(F, Vec<F>), Error> {
     assert!(num_vars > 0);
 
@@ -75,7 +78,15 @@ pub trait SumCheckFunction<F>: Debug {
 
     fn compute_sum(&self, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F>;
 
-    fn write_sum(&self, sum: &[F], transcript: &mut impl TranscriptWrite<F>) -> Result<(), Error>;
+    fn write_sum(
+        &self,
+        sum: &[F],
+        transcript: &mut (impl TranscriptWrite<F> + ?Sized),
+    ) -> Result<(), Error>;
 
-    fn read_sum(&self, claim: F, transcript: &mut impl TranscriptRead<F>) -> Result<Vec<F>, Error>;
+    fn read_sum(
+        &self,
+        claim: F,
+        transcript: &mut (impl TranscriptRead<F> + ?Sized),
+    ) -> Result<Vec<F>, Error>;
 }

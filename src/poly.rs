@@ -38,6 +38,12 @@ impl<F: Field> MultilinearPoly<F> {
     }
 }
 
+impl<F> From<MultilinearPoly<F>> for Vec<F> {
+    fn from(poly: MultilinearPoly<F>) -> Self {
+        poly.evals
+    }
+}
+
 impl<F> Deref for MultilinearPoly<F> {
     type Target = Vec<F>;
 
@@ -46,8 +52,65 @@ impl<F> Deref for MultilinearPoly<F> {
     }
 }
 
-pub fn eq_poly<F: Field>(y: &[F], scalar: F) -> Vec<F> {
-    eq_expand(&[scalar], y)
+pub fn evaluate<F: Field>(evals: &[F], x: &[F]) -> F {
+    assert_eq!(evals.len(), 1 << x.len());
+
+    let evals = &mut Cow::Borrowed(evals);
+    let buf = &mut Vec::with_capacity(evals.len() >> 1);
+    x.iter().for_each(|x_i| merge_in_place(evals, buf, x_i));
+    evals[0]
+}
+
+fn merge_in_place<F: Field>(evals: &mut Cow<[F]>, buf: &mut Vec<F>, x_i: &F) {
+    merge_into(buf, evals, x_i);
+    if let Cow::Owned(_) = evals {
+        mem::swap(evals.to_mut(), buf);
+    } else {
+        *evals = mem::replace(buf, Vec::with_capacity(buf.len() >> 1)).into();
+    }
+}
+
+fn merge_into<F: Field>(target: &mut Vec<F>, evals: &[F], x_i: &F) {
+    assert!(target.capacity() >= evals.len() >> 1);
+    target.resize(evals.len() >> 1, F::ZERO);
+
+    izip_par!(target, izip_par!(&evals[0..], &evals[1..]).step_by(2))
+        .for_each(|(target, (eval_0, eval_1))| *target = (*eval_1 - eval_0) * x_i + eval_0);
+}
+
+pub struct PartialEqPoly<'a, F> {
+    r_hi: &'a [F],
+    eq_r_lo: Vec<F>,
+}
+
+impl<'a, F> Deref for PartialEqPoly<'a, F> {
+    type Target = Vec<F>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.eq_r_lo
+    }
+}
+
+impl<'a, F: Field> PartialEqPoly<'a, F> {
+    pub fn new(r: &'a [F], mid: usize, scalar: F) -> Self {
+        let (r_lo, r_hi) = r.split_at(mid);
+        PartialEqPoly {
+            r_hi,
+            eq_r_lo: eq_expand(&[scalar], r_lo),
+        }
+    }
+
+    pub fn r_hi(&self) -> &[F] {
+        self.r_hi
+    }
+
+    pub fn expand(&self) -> Vec<F> {
+        eq_expand(&self.eq_r_lo, self.r_hi)
+    }
+}
+
+pub fn eq_poly<F: Field>(y: &[F], scalar: F) -> MultilinearPoly<F> {
+    MultilinearPoly::new(eq_expand(&[scalar], y).into())
 }
 
 pub fn eq_expand<F: Field>(poly: &[F], y: &[F]) -> Vec<F> {
@@ -73,30 +136,4 @@ pub fn eq_eval<'a, F: Field>(rs: impl IntoIterator<Item = &'a [F]>) -> F {
         ),
         _ => unimplemented!(),
     }
-}
-
-pub fn evaluate<F: Field>(evals: &[F], x: &[F]) -> F {
-    assert_eq!(1 << x.len(), evals.len());
-
-    let evals = &mut Cow::Borrowed(evals);
-    let buf = &mut Vec::with_capacity(evals.len() >> 1);
-    x.iter().for_each(|x_i| merge_in_place(evals, buf, x_i));
-    evals[0]
-}
-
-fn merge_in_place<F: Field>(evals: &mut Cow<[F]>, buf: &mut Vec<F>, x_i: &F) {
-    merge_into(buf, evals, x_i);
-    if let Cow::Owned(_) = evals {
-        mem::swap(evals.to_mut(), buf);
-    } else {
-        *evals = mem::replace(buf, Vec::with_capacity(buf.len() >> 1)).into();
-    }
-}
-
-fn merge_into<F: Field>(target: &mut Vec<F>, evals: &[F], x_i: &F) {
-    assert!(target.capacity() >= evals.len() >> 1);
-    target.resize(evals.len() >> 1, F::ZERO);
-
-    izip_par!(target, izip_par!(&evals[0..], &evals[1..]).step_by(2))
-        .for_each(|(target, (eval_0, eval_1))| *target = (*eval_1 - eval_0) * x_i + eval_0);
 }
