@@ -5,7 +5,7 @@ use crate::{
     },
     poly::evaluate,
     transcript::{Transcript, TranscriptRead, TranscriptWrite},
-    util::{izip_eq, Field, Itertools},
+    util::{arithmetic::Field, izip_eq, Itertools},
 };
 use std::{io, mem::take};
 
@@ -108,7 +108,7 @@ mod test {
         poly::evaluate,
         prove_gkr,
         transcript::Keccak256Transcript,
-        util::{izip_eq, test::rand_vec, Itertools, PrimeField, RngCore},
+        util::{arithmetic::PrimeField, izip_eq, test::rand_vec, Itertools, RngCore},
         verify_gkr,
     };
 

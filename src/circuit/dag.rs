@@ -27,6 +27,24 @@ impl<T> DirectedAcyclicGraph<T> {
         Self::new(nodes, adj_mat)
     }
 
+    pub fn insert(&mut self, node: T) -> NodeId {
+        let id = self.nodes.len();
+        self.nodes.push(node);
+        self.adj_mat.resize(self.nodes.len());
+        NodeId(id)
+    }
+
+    pub fn link(&mut self, NodeId(from): NodeId, NodeId(to): NodeId) {
+        let adj_mat = &mut self.adj_mat.0;
+        assert!(matches!(adj_mat[from][to], None | Some(Direction::Out)));
+        assert!(matches!(adj_mat[to][from], None | Some(Direction::In)));
+
+        adj_mat[from][to] = Some(Direction::Out);
+        adj_mat[to][from] = Some(Direction::In);
+
+        assert!(self.adj_mat.topo().is_some());
+    }
+
     pub fn nodes(&self) -> &[T] {
         &self.nodes
     }
@@ -40,7 +58,16 @@ impl<T> DirectedAcyclicGraph<T> {
     }
 }
 
-impl<F> Deref for DirectedAcyclicGraph<F> {
+impl<T> Default for DirectedAcyclicGraph<T> {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            adj_mat: AdjacencyMatrix::default(),
+        }
+    }
+}
+
+impl<T> Deref for DirectedAcyclicGraph<T> {
     type Target = AdjacencyMatrix;
 
     fn deref(&self) -> &Self::Target {
@@ -48,7 +75,10 @@ impl<F> Deref for DirectedAcyclicGraph<F> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
+pub struct NodeId(usize);
+
+#[derive(Clone, Debug, Default)]
 pub struct AdjacencyMatrix(Vec<Vec<Edge>>);
 
 impl AdjacencyMatrix {
@@ -96,6 +126,11 @@ impl AdjacencyMatrix {
 
     pub fn outputs(&self) -> impl Iterator<Item = usize> + '_ {
         self.outdegs().positions(|deg| deg == 0)
+    }
+
+    pub fn resize(&mut self, size: usize) {
+        self.0.iter_mut().for_each(|e| e.resize(size, None));
+        self.0.resize(size, vec![None; size]);
     }
 
     fn adjs(&self, idx: usize, direction: Direction) -> impl Iterator<Item = usize> + '_ {

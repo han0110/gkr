@@ -1,21 +1,24 @@
 use crate::{
     poly::MultilinearPoly,
     transcript::{TranscriptRead, TranscriptWrite},
-    util::{horner, Field, Itertools},
+    util::{
+        arithmetic::{horner, Field},
+        Itertools,
+    },
     Error,
 };
-use std::{borrow::Cow, fmt::Debug};
+use std::fmt::Debug;
 
 pub mod generic;
 pub mod quadratic;
 
-pub fn prove_sum_check<'a, F: Field>(
+pub fn prove_sum_check<F: Field>(
     g: &impl SumCheckFunction<F>,
     claim: F,
-    polys: impl IntoIterator<Item = Cow<'a, MultilinearPoly<F>>>,
+    polys: impl IntoIterator<Item = MultilinearPoly<F>>,
     transcript: &mut (impl TranscriptWrite<F> + ?Sized),
 ) -> Result<(F, Vec<F>, Vec<F>), Error> {
-    let mut polys = polys.into_iter().map(Cow::into_owned).collect_vec();
+    let mut polys = polys.into_iter().collect_vec();
     assert!(!polys.is_empty());
 
     let num_vars = polys[0].num_vars();

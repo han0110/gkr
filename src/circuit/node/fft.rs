@@ -14,13 +14,14 @@ use crate::{
     },
     transcript::{Transcript, TranscriptRead, TranscriptWrite},
     util::{
-        chain, chain_par, fft, hadamard_add, inner_product, izip, izip_par, powers, squares, Field,
-        Itertools, PrimeField,
+        arithmetic::{fft, inner_product, powers, squares, Field, PrimeField},
+        chain, chain_par,
+        collection::Hadamard,
+        izip, izip_par, Itertools,
     },
     Error,
 };
 use rayon::prelude::*;
-use std::borrow::Cow;
 
 #[derive(Clone, Debug)]
 pub struct FftNode<F> {
@@ -74,13 +75,9 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
             .unzip::<_, _, Vec<_>, Vec<_>>();
 
         let (r_x, input_r_x, w_r_xs) = {
-            let input = inputs[0].into();
-            let w = ws
-                .iter()
-                .map(|w| w.as_slice().into())
-                .reduce(|acc, item| hadamard_add(acc, &item).into())
-                .unwrap();
-            let polys = [input, w].map(MultilinearPoly::new).map(Cow::Owned);
+            let input = inputs[0].clone();
+            let w = ws.iter().map(|w| w.as_slice()).hada_sum();
+            let polys = [input, w].map(MultilinearPoly::new);
             let (_, r_x, evals) = prove_sum_check(&Quadratic, claim.value, polys, transcript)?;
             let w_r_xs = ws.iter().map(|w| evaluate(w, &r_x)).collect_vec();
             transcript.write_felt(&evals[0])?;
@@ -139,10 +136,6 @@ impl<F: PrimeField> FftNode<F> {
         }
     }
 
-    pub fn into_boxed(self) -> Box<dyn Node<F>> {
-        Box::new(self)
-    }
-
     fn wiring(&self, r_g: &[F], alpha: F) -> Vec<Vec<F>> {
         let init = self.n_inv.map(|n_inv| n_inv * alpha).unwrap_or(alpha);
         let mut bufs = Vec::with_capacity(r_g.len());
@@ -184,11 +177,9 @@ impl<F: PrimeField> FftNode<F> {
                 let omegas = Vec::from_iter(self.omegas.iter().copied().step_by(1 << layer));
                 let w_interms = w_interms.iter().map(|w_interms| {
                     let w = w_interms.iter().nth_back(layer).unwrap();
-                    chain![w, w].copied().collect_vec().into()
+                    chain![w, w].copied().collect_vec()
                 });
-                chain![[eq_r_x.into(), omegas].map(Into::into), w_interms]
-                    .map(MultilinearPoly::new)
-                    .map(Cow::Owned)
+                chain![[eq_r_x.into(), omegas].map(Into::into), w_interms].map(MultilinearPoly::new)
             };
             let (_, r_x_prime, evals) = prove_sum_check(&g, claim, polys, transcript)?;
             let w_interm_r_x_primes = evals[2..].to_vec();
@@ -322,14 +313,15 @@ mod test {
             node::{
                 fft::{root_of_unity, FftNode},
                 input::InputNode,
+                Node,
             },
             Circuit, DirectedAcyclicGraph,
         },
         test::run_gkr,
         util::{
-            fft,
+            arithmetic::{fft, PrimeField},
             test::{rand_vec, seeded_std_rng},
-            PrimeField, RngCore,
+            RngCore,
         },
     };
     use halo2_curves::bn256::Fr;

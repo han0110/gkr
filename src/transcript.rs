@@ -1,4 +1,4 @@
-use crate::{util::PrimeField, Error};
+use crate::{util::arithmetic::PrimeField, Error};
 use num_bigint::BigUint;
 use sha3::{
     digest::{Digest, FixedOutputReset},

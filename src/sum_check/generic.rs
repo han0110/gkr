@@ -2,7 +2,12 @@ use crate::{
     poly::MultilinearPoly,
     sum_check::SumCheckFunction,
     transcript::{TranscriptRead, TranscriptWrite},
-    util::{chain, inner_product, izip, powers, AdditiveVec, Field, Itertools, PrimeField},
+    util::{
+        arithmetic::{inner_product, powers, Field, PrimeField},
+        chain,
+        collection::AdditiveVec,
+        izip, Itertools,
+    },
     Error,
 };
 use rayon::prelude::*;
@@ -168,7 +173,6 @@ impl<F> Expression<F> {
 }
 
 impl<F: Field> Expression<F> {
-    #[allow(clippy::too_many_arguments)]
     pub fn evaluate<T: Clone>(
         &self,
         constant: &impl Fn(F) -> T,

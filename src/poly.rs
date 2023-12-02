@@ -1,4 +1,4 @@
-use crate::util::{izip, izip_eq, izip_par, Field, Itertools};
+use crate::util::{arithmetic::Field, izip, izip_eq, izip_par, Itertools};
 use rayon::prelude::*;
 use std::{borrow::Cow, mem, ops::Deref};
 
@@ -15,8 +15,7 @@ impl<F> MultilinearPoly<F> {
 }
 
 impl<F: Clone> MultilinearPoly<F> {
-    pub fn new(evals: Cow<[F]>) -> Self {
-        let evals = evals.into_owned();
+    pub fn new(evals: Vec<F>) -> Self {
         let num_vars = if evals.is_empty() {
             0
         } else {
@@ -78,12 +77,12 @@ fn merge_into<F: Field>(target: &mut Vec<F>, evals: &[F], x_i: &F) {
         .for_each(|(target, (eval_0, eval_1))| *target = (*eval_1 - eval_0) * x_i + eval_0);
 }
 
-pub struct PartialEqPoly<'a, F> {
-    r_hi: &'a [F],
+pub struct PartialEqPoly<F> {
+    r_hi: Vec<F>,
     eq_r_lo: Vec<F>,
 }
 
-impl<'a, F> Deref for PartialEqPoly<'a, F> {
+impl<F> Deref for PartialEqPoly<F> {
     type Target = Vec<F>;
 
     fn deref(&self) -> &Self::Target {
@@ -91,26 +90,26 @@ impl<'a, F> Deref for PartialEqPoly<'a, F> {
     }
 }
 
-impl<'a, F: Field> PartialEqPoly<'a, F> {
-    pub fn new(r: &'a [F], mid: usize, scalar: F) -> Self {
+impl<F: Field> PartialEqPoly<F> {
+    pub fn new(r: &[F], mid: usize, scalar: F) -> Self {
         let (r_lo, r_hi) = r.split_at(mid);
         PartialEqPoly {
-            r_hi,
+            r_hi: r_hi.to_vec(),
             eq_r_lo: eq_expand(&[scalar], r_lo),
         }
     }
 
     pub fn r_hi(&self) -> &[F] {
-        self.r_hi
+        &self.r_hi
     }
 
     pub fn expand(&self) -> Vec<F> {
-        eq_expand(&self.eq_r_lo, self.r_hi)
+        eq_expand(&self.eq_r_lo, &self.r_hi)
     }
 }
 
 pub fn eq_poly<F: Field>(y: &[F], scalar: F) -> MultilinearPoly<F> {
-    MultilinearPoly::new(eq_expand(&[scalar], y).into())
+    MultilinearPoly::new(eq_expand(&[scalar], y))
 }
 
 pub fn eq_expand<F: Field>(poly: &[F], y: &[F]) -> Vec<F> {

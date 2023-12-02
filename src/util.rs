@@ -1,128 +1,8 @@
-use rayon::prelude::*;
-use std::{
-    borrow::Borrow,
-    borrow::Cow,
-    iter::{self, Sum},
-    ops::{Add, AddAssign, Deref, DerefMut},
-};
-
-pub use halo2_curves::{
-    ff::{Field, PrimeField},
-    fft::best_fft as fft,
-};
 pub use itertools::{chain, izip, Itertools};
 pub use rand_core::RngCore;
 
-pub fn div_ceil(dividend: usize, divisor: usize) -> usize {
-    (dividend + divisor - 1) / divisor
-}
-
-pub fn horner<F: Field>(vs: &[F], x: &F) -> F {
-    vs.iter().rev().fold(F::ZERO, |acc, v| acc * x + v)
-}
-
-pub fn inner_product<F: Field>(
-    lhs: impl IntoIterator<Item = impl Borrow<F>>,
-    rhs: impl IntoIterator<Item = impl Borrow<F>>,
-) -> F {
-    F::sum(izip_eq!(lhs, rhs).map(|(lhs, rhs)| *lhs.borrow() * rhs.borrow()))
-}
-
-pub fn powers<F: Field>(base: F) -> impl Iterator<Item = F> {
-    iter::successors(Some(F::ONE), move |power| Some(base * power))
-}
-
-pub fn squares<F: Field>(base: F) -> impl Iterator<Item = F> {
-    iter::successors(Some(base), move |square| Some(square.square()))
-}
-
-pub fn hadamard_add<F: Field>(lhs: Cow<[F]>, rhs: &[F]) -> Vec<F> {
-    let mut lhs = lhs.into_owned();
-    izip_par!(&mut lhs, rhs).for_each(|(lhs, rhs)| *lhs += rhs);
-    lhs
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct AdditiveArray<F, const N: usize>(pub [F; N]);
-
-impl<F, const N: usize> Deref for AdditiveArray<F, N> {
-    type Target = [F; N];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<F, const N: usize> DerefMut for AdditiveArray<F, N> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl<F: Copy + Default, const N: usize> Default for AdditiveArray<F, N> {
-    fn default() -> Self {
-        Self([F::default(); N])
-    }
-}
-
-impl<F: Field, const N: usize> AddAssign for AdditiveArray<F, N> {
-    fn add_assign(&mut self, rhs: Self) {
-        izip!(&mut self.0, &rhs.0).for_each(|(acc, item)| *acc += item);
-    }
-}
-
-impl<F: Field, const N: usize> Add for AdditiveArray<F, N> {
-    type Output = Self;
-
-    fn add(mut self, rhs: Self) -> Self::Output {
-        self += rhs;
-        self
-    }
-}
-
-impl<F: Field, const N: usize> Sum for AdditiveArray<F, N> {
-    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
-        iter.reduce(|acc, item| acc + item).unwrap_or_default()
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct AdditiveVec<F>(pub Vec<F>);
-
-impl<F> Deref for AdditiveVec<F> {
-    type Target = Vec<F>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<F> DerefMut for AdditiveVec<F> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl<F: Clone + Default> AdditiveVec<F> {
-    pub fn new(len: usize) -> Self {
-        Self(vec![F::default(); len])
-    }
-}
-
-impl<F: Field> AddAssign for AdditiveVec<F> {
-    fn add_assign(&mut self, rhs: Self) {
-        izip_eq!(&mut self.0, &rhs.0).for_each(|(acc, item)| *acc += item);
-    }
-}
-
-impl<F: Field> Add for AdditiveVec<F> {
-    type Output = Self;
-
-    fn add(mut self, rhs: Self) -> Self::Output {
-        self += rhs;
-        self
-    }
-}
+pub mod arithmetic;
+pub mod collection;
 
 macro_rules! chain_par {
     () => {
@@ -186,13 +66,13 @@ pub(crate) use {chain_par, izip_eq, izip_par};
 
 #[cfg(test)]
 pub mod test {
-    use crate::util::Field;
+    use crate::util::{arithmetic::Field, Itertools};
     use rand::{
         distributions::uniform::SampleRange,
         rngs::{OsRng, StdRng},
         CryptoRng, Rng, RngCore, SeedableRng,
     };
-    use std::{array, iter};
+    use std::{array, hash::Hash, iter};
 
     pub fn std_rng() -> impl RngCore + CryptoRng {
         StdRng::from_seed(Default::default())
@@ -216,5 +96,13 @@ pub mod test {
 
     pub fn rand_vec<F: Field>(n: usize, mut rng: impl RngCore) -> Vec<F> {
         iter::repeat_with(|| F::random(&mut rng)).take(n).collect()
+    }
+
+    pub fn rand_unique<T, R>(n: usize, f: impl Fn(&mut R) -> T, mut rng: R) -> Vec<T>
+    where
+        T: Clone + Eq + Hash,
+        R: RngCore,
+    {
+        iter::repeat_with(|| f(&mut rng)).unique().take(n).collect()
     }
 }

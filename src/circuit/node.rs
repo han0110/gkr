@@ -1,6 +1,6 @@
 use crate::{
     transcript::{TranscriptRead, TranscriptWrite},
-    util::{inner_product, Field},
+    util::arithmetic::{inner_product, Field},
     Error,
 };
 use std::fmt::Debug;
@@ -14,6 +14,13 @@ pub use input::InputNode;
 pub use vanilla::{VanillaGate, VanillaNode};
 
 pub trait Node<F>: Debug {
+    fn into_boxed(self) -> Box<dyn Node<F>>
+    where
+        Self: 'static + Sized,
+    {
+        Box::new(self)
+    }
+
     fn input_size(&self) -> usize {
         1 << self.log2_input_size()
     }

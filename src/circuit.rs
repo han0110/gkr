@@ -1,6 +1,6 @@
 use crate::{
     circuit::{dag::AdjacencyMatrix, node::Node},
-    util::Field,
+    util::arithmetic::Field,
 };
 
 mod dag;

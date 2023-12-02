@@ -13,10 +13,6 @@ impl InputNode {
     pub fn new(log2_size: usize) -> Self {
         Self { log2_size }
     }
-
-    pub fn into_boxed<F>(self) -> Box<dyn Node<F>> {
-        Box::new(self)
-    }
 }
 
 impl<F> Node<F> for InputNode {
