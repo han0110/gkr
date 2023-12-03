@@ -1,18 +1,24 @@
 use crate::{
     poly::MultilinearPoly,
     transcript::{TranscriptRead, TranscriptWrite},
-    util::{horner, Field, Itertools},
+    util::{
+        arithmetic::{horner, Field},
+        Itertools,
+    },
     Error,
 };
-use std::{borrow::Cow, fmt::Debug};
+use std::fmt::Debug;
 
-pub fn prove_sum_check<'a, F: Field>(
-    g: &impl Function<F>,
+pub mod generic;
+pub mod quadratic;
+
+pub fn prove_sum_check<F: Field>(
+    g: &impl SumCheckFunction<F>,
     claim: F,
-    polys: impl IntoIterator<Item = Cow<'a, MultilinearPoly<F>>>,
-    transcript: &mut impl TranscriptWrite<F>,
+    polys: impl IntoIterator<Item = MultilinearPoly<F>>,
+    transcript: &mut (impl TranscriptWrite<F> + ?Sized),
 ) -> Result<(F, Vec<F>, Vec<F>), Error> {
-    let mut polys = polys.into_iter().map(Cow::into_owned).collect_vec();
+    let mut polys = polys.into_iter().collect_vec();
     assert!(!polys.is_empty());
 
     let num_vars = polys[0].num_vars();
@@ -41,10 +47,10 @@ pub fn prove_sum_check<'a, F: Field>(
 }
 
 pub fn verify_sum_check<F: Field>(
-    g: &impl Function<F>,
+    g: &impl SumCheckFunction<F>,
     claim: F,
     num_vars: usize,
-    transcript: &mut impl TranscriptRead<F>,
+    transcript: &mut (impl TranscriptRead<F> + ?Sized),
 ) -> Result<(F, Vec<F>), Error> {
     assert!(num_vars > 0);
 
@@ -70,12 +76,20 @@ pub fn err_unmatched_evaluation() -> Error {
     Error::InvalidSumCheck("Unmatched evaluation from SumCheck subclaim".to_string())
 }
 
-pub trait Function<F: Field>: Clone + Debug {
+pub trait SumCheckFunction<F>: Debug {
     fn degree(&self) -> usize;
 
     fn compute_sum(&self, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F>;
 
-    fn write_sum(&self, sum: &[F], transcript: &mut impl TranscriptWrite<F>) -> Result<(), Error>;
+    fn write_sum(
+        &self,
+        sum: &[F],
+        transcript: &mut (impl TranscriptWrite<F> + ?Sized),
+    ) -> Result<(), Error>;
 
-    fn read_sum(&self, claim: F, transcript: &mut impl TranscriptRead<F>) -> Result<Vec<F>, Error>;
+    fn read_sum(
+        &self,
+        claim: F,
+        transcript: &mut (impl TranscriptRead<F> + ?Sized),
+    ) -> Result<Vec<F>, Error>;
 }

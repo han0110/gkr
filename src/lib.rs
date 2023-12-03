@@ -1,14 +1,15 @@
 use crate::{
-    circuit::Circuit,
-    poly::{evaluate, MultilinearPoly},
-    sum_check::{err_unmatched_evaluation, prove_sum_check, verify_sum_check},
-    transcript::{TranscriptRead, TranscriptWrite},
-    util::{inner_product, izip, Field, Itertools},
+    circuit::{
+        node::{CombinedEvalClaim, EvalClaim},
+        Circuit,
+    },
+    poly::evaluate,
+    transcript::{Transcript, TranscriptRead, TranscriptWrite},
+    util::{arithmetic::Field, izip_eq, Itertools},
 };
-use std::{array, borrow::Cow, io};
+use std::{io, mem::take};
 
 pub mod circuit;
-pub mod etc;
 pub mod poly;
 pub mod sum_check;
 pub mod transcript;
@@ -22,159 +23,129 @@ pub enum Error {
 
 pub fn prove_gkr<F: Field>(
     circuit: &Circuit<F>,
-    values: &[Vec<F>],
-    r_g: &[F],
-    output_r_g: F,
+    values: Vec<Vec<F>>,
+    output_claims: Vec<EvalClaim<F>>,
     transcript: &mut impl TranscriptWrite<F>,
-) -> Result<[(Vec<F>, F); 2], Error> {
-    assert!(!circuit.layers().is_empty());
-    assert_eq!(values.len(), circuit.layers().len() + 1);
-
-    let (output, inputs) = values.split_last().unwrap();
+) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
+    circuit
+        .topo_iter()
+        .for_each(|(idx, node)| assert_eq!(values[idx].len(), node.output_size()));
 
     if cfg!(feature = "sanity-check") {
-        assert_eq!(evaluate(output, r_g), output_r_g);
+        izip_eq!(circuit.adj_mat().outputs(), &output_claims).for_each(|(idx, claim)| {
+            assert_eq!(evaluate(&values[idx], claim.point()), claim.value())
+        });
     }
 
-    let mut r_gs = [r_g.to_vec(), vec![F::ZERO; r_g.len()]];
-    let mut output_evals = [output_r_g, Default::default()];
+    let mut claims = vec![Vec::new(); circuit.nodes().len()];
+    izip_eq!(circuit.adj_mat().outputs(), output_claims)
+        .for_each(|(idx, claim)| claims[idx] = vec![claim]);
 
-    for (layer, input) in izip!(circuit.layers(), inputs).rev() {
-        let alphas = if output_evals[1].is_zero_vartime() {
-            [F::ONE, F::ZERO]
-        } else {
-            array::from_fn(|_| transcript.squeeze_challenge())
-        };
-        let input = MultilinearPoly::new(input.as_slice().into());
-        let eq_r_g_prime = layer.eq_r_g_prime(&r_gs, &alphas);
-        let (claim, r_x_0, input_r_x_0) = {
-            let claim = inner_product(&alphas, &output_evals);
-            let [f_0, f_1] = layer.phase_1_polys(&input, &eq_r_g_prime);
-            let polys = [Cow::Owned(f_0), Cow::Owned(f_1), Cow::Borrowed(&input)];
-            let (claim, r_x_0, evals) = prove_sum_check(layer, claim, polys, transcript)?;
-            transcript.write_felt(&evals[2])?;
-            (claim, r_x_0, evals[2])
-        };
-        let (r_x_1, input_r_x_1) = {
-            let [f_0, f_1] = layer.phase_2_polys(&eq_r_g_prime, &r_x_0, &input_r_x_0);
-            let polys = [f_0, f_1, input].map(Cow::Owned);
-            let (_, r_x_1, evals) = prove_sum_check(layer, claim, polys, transcript)?;
-            transcript.write_felt(&evals[2])?;
-            (r_x_1, evals[2])
-        };
-        r_gs = [r_x_0, r_x_1];
-        output_evals = [input_r_x_0, input_r_x_1];
+    for (idx, node) in circuit.topo_iter().rev() {
+        if node.is_input() {
+            continue;
+        }
+
+        let claim = combined_claim(take(&mut claims[idx]), transcript);
+        let inputs = Vec::from_iter(circuit.adj_mat().predec(idx).map(|idx| &values[idx]));
+        let sub_claims = node.prove_claim_reduction(claim, inputs, transcript)?;
+
+        izip_eq!(circuit.adj_mat().predec(idx), sub_claims)
+            .for_each(|(idx, sub_claims)| claims[idx].extend(sub_claims));
     }
 
-    Ok(izip!(r_gs, output_evals).collect_vec().try_into().unwrap())
+    let input_claims = Vec::from_iter(circuit.adj_mat().inputs().map(|idx| take(&mut claims[idx])));
+
+    assert!(!claims.iter().any(|claims| !claims.is_empty()));
+
+    Ok(input_claims)
 }
 
 pub fn verify_gkr<F: Field>(
     circuit: &Circuit<F>,
-    r_g: &[F],
-    output_r_g: F,
+    output_claims: Vec<EvalClaim<F>>,
     transcript: &mut impl TranscriptRead<F>,
-) -> Result<[(Vec<F>, F); 2], Error> {
-    assert!(!circuit.layers().is_empty());
+) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
+    let mut claims = vec![Vec::new(); circuit.nodes().len()];
+    izip_eq!(circuit.adj_mat().outputs(), output_claims)
+        .for_each(|(idx, output_claims)| claims[idx] = vec![output_claims]);
 
-    let mut r_gs = [r_g.to_vec(), vec![F::ZERO; r_g.len()]];
-    let mut output_evals = [output_r_g, Default::default()];
-
-    for layer in circuit.layers().iter().rev() {
-        let alphas = if output_evals[1].is_zero_vartime() {
-            [F::ONE, F::ZERO]
-        } else {
-            array::from_fn(|_| transcript.squeeze_challenge())
-        };
-        let (claim, r_x_0, input_r_x_0) = {
-            let claim = inner_product(&alphas, &output_evals);
-            let (claim, r_x_0) =
-                verify_sum_check(layer, claim, layer.log2_input_len(), transcript)?;
-            (claim, r_x_0, transcript.read_felt()?)
-        };
-        let (claim, r_x_1, input_r_x_1) = {
-            let (claim, r_x_1) =
-                verify_sum_check(layer, claim, layer.log2_input_len(), transcript)?;
-            (claim, r_x_1, transcript.read_felt()?)
-        };
-        let r_xs = [r_x_0, r_x_1];
-        let input_evals = [input_r_x_0, input_r_x_1];
-        if claim != layer.evaluate(&r_gs, &alphas, &r_xs, &input_evals) {
-            return Err(err_unmatched_evaluation());
+    for (idx, node) in circuit.topo_iter().rev() {
+        if node.is_input() {
+            continue;
         }
-        r_gs = r_xs;
-        output_evals = input_evals;
+
+        let claim = combined_claim(take(&mut claims[idx]), transcript);
+        let sub_claims = node.verify_claim_reduction(claim, transcript)?;
+
+        izip_eq!(circuit.adj_mat().predec(idx), sub_claims)
+            .for_each(|(idx, sub_claims)| claims[idx].extend(sub_claims));
     }
 
-    Ok(izip!(r_gs, output_evals).collect_vec().try_into().unwrap())
+    let input_claims = Vec::from_iter(circuit.adj_mat().inputs().map(|idx| take(&mut claims[idx])));
+
+    assert!(!claims.iter().any(|claims| !claims.is_empty()));
+
+    Ok(input_claims)
+}
+
+fn combined_claim<F: Field>(
+    claims: Vec<EvalClaim<F>>,
+    transcript: &mut impl Transcript<F>,
+) -> CombinedEvalClaim<F> {
+    let alphas = if claims.len() == 1 {
+        vec![F::ONE]
+    } else {
+        transcript.squeeze_challenges(claims.len())
+    };
+    CombinedEvalClaim::new(claims, alphas)
 }
 
 #[cfg(test)]
 mod test {
     use crate::{
-        circuit::{
-            test::{grand_product_circuit, grand_sum_circuit, rand_circuit},
-            Circuit,
-        },
+        circuit::{node::EvalClaim, Circuit},
         poly::evaluate,
         prove_gkr,
         transcript::Keccak256Transcript,
-        util::{
-            chain,
-            test::{rand_vec, seeded_std_rng},
-            Itertools, PrimeField, RngCore,
-        },
+        util::{arithmetic::PrimeField, izip_eq, test::rand_vec, Itertools, RngCore},
         verify_gkr,
     };
-    use halo2_curves::bn256::Fr;
 
-    #[test]
-    fn grand_product() {
-        let mut rng = seeded_std_rng();
-        for log2_input_len in 1..16 {
-            let (circuit, input, _) = grand_product_circuit(log2_input_len, &mut rng);
-            run_gkr::<Fr>(&circuit, &input, &mut rng);
-        }
-    }
-
-    #[test]
-    fn grand_sum() {
-        let mut rng = seeded_std_rng();
-        for log2_input_len in 1..16 {
-            let (circuit, input, _) = grand_sum_circuit(log2_input_len, &mut rng);
-            run_gkr::<Fr>(&circuit, &input, &mut rng);
-        }
-    }
-
-    #[test]
-    fn rand() {
-        let mut rng = seeded_std_rng();
-        for _ in 1..16 {
-            let (circuit, input, _) = rand_circuit(&mut rng);
-            run_gkr::<Fr>(&circuit, &input, &mut rng);
-        }
-    }
-
-    fn run_gkr<F: PrimeField>(circuit: &Circuit<F>, input: &[F], mut rng: impl RngCore) {
-        let (values, r_g, output_r_g) = {
-            let outputs = circuit.outputs(input);
-            let values = chain![[input.to_vec()], outputs].collect_vec();
-            let r_g = rand_vec(circuit.log2_output_len(), &mut rng);
-            let output_r_g = evaluate(values.last().unwrap(), &r_g);
-            (values, r_g, output_r_g)
+    pub fn run_gkr<F: PrimeField>(
+        circuit: &Circuit<F>,
+        inputs: Vec<Vec<F>>,
+        mut rng: impl RngCore,
+    ) {
+        let (values, output_claims) = {
+            let values = circuit.evaluate(inputs.clone());
+            let output_claims = circuit
+                .adj_mat()
+                .outputs()
+                .map(|idx| {
+                    let point = rand_vec(circuit.nodes()[idx].log2_output_size(), &mut rng);
+                    let value = evaluate(&values[idx], &point);
+                    EvalClaim::new(point, value)
+                })
+                .collect_vec();
+            (values, output_claims)
         };
 
         let proof = {
             let mut transcript = Keccak256Transcript::default();
-            prove_gkr(circuit, &values, &r_g, output_r_g, &mut transcript).unwrap();
+            prove_gkr(circuit, values, output_claims.clone(), &mut transcript).unwrap();
             transcript.into_proof()
         };
 
-        let queries = {
+        let input_claims = {
             let mut transcript = Keccak256Transcript::from_proof(&proof);
-            verify_gkr(circuit, &r_g, output_r_g, &mut transcript).unwrap()
+            verify_gkr(circuit, output_claims, &mut transcript).unwrap()
         };
 
-        chain![queries].for_each(|(r, eval)| assert_eq!(evaluate(input, &r), eval));
+        izip_eq!(&inputs, input_claims).for_each(|(input, claims)| {
+            claims
+                .iter()
+                .for_each(|claim| assert_eq!(evaluate(input, claim.point()), claim.value()))
+        });
     }
 }
