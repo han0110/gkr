@@ -478,27 +478,29 @@ impl Calculation<usize> {
 }
 
 fn vander_mat_inv<F: Field>(points: Vec<F>) -> Vec<Vec<F>> {
+    let poly_from_roots = |roots: &[F], scalar: F| {
+        let mut poly = vec![F::ZERO; roots.len() + 1];
+        *poly.last_mut().unwrap() = scalar;
+        izip!(2.., roots).for_each(|(len, root)| {
+            let mut buf = scalar;
+            (0..poly.len() - 1).rev().take(len).for_each(|idx| {
+                buf = poly[idx] - buf * root;
+                mem::swap(&mut buf, &mut poly[idx])
+            })
+        });
+        poly
+    };
+
     let mut mat = vec![vec![F::ZERO; points.len()]; points.len()];
     izip!(0.., &points).for_each(|(j, point_j)| {
         let point_is = izip!(0.., &points)
             .filter(|(i, _)| *i != j)
-            .map(|(_, point_i)| point_i)
+            .map(|(_, point_i)| *point_i)
             .collect_vec();
-        let scalar = F::product(point_is.iter().map(|point_i| *point_j - *point_i))
+        let scalar = F::product(point_is.iter().map(|point_i| *point_j - point_i))
             .invert()
             .unwrap();
-
-        let mut coeffs = vec![F::ZERO; points.len()];
-        *coeffs.last_mut().unwrap() = scalar;
-        izip!(2.., point_is).for_each(|(len, point_i)| {
-            let mut buf = scalar;
-            (0..coeffs.len() - 1).rev().take(len).for_each(|idx| {
-                buf = coeffs[idx] - buf * point_i;
-                mem::swap(&mut buf, &mut coeffs[idx])
-            })
-        });
-
-        izip!(&mut mat, coeffs).for_each(|(row, coeff)| row[j] = coeff)
+        izip!(&mut mat, poly_from_roots(&point_is, scalar)).for_each(|(row, coeff)| row[j] = coeff)
     });
     mat
 }

@@ -10,6 +10,7 @@ pub struct DirectedAcyclicGraph<T> {
 impl<T> DirectedAcyclicGraph<T> {
     pub fn new(nodes: Vec<T>, adj_mat: AdjacencyMatrix) -> Self {
         assert_eq!(nodes.len(), adj_mat.0.len());
+        assert!(adj_mat.topo().is_some());
 
         Self { nodes, adj_mat }
     }

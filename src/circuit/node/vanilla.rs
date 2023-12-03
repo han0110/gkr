@@ -56,12 +56,9 @@ impl<F: Field> Node<F> for VanillaNode<F> {
                     gate.w_1
                         .iter()
                         .map(|(s, (i_0, b_0))| maybe_mul!(s, inputs[*i_0][b_x + b_0])),
-                    gate.w_2
-                        .iter()
-                        .map(|(s, (i_0, b_0), (i_1, b_1))| maybe_mul!(
-                            s,
-                            inputs[*i_0][b_x + b_0] * inputs[*i_1][b_x + b_1]
-                        )),
+                    gate.w_2.iter().map(|(s, (i_0, b_0), (i_1, b_1))| {
+                        maybe_mul!(s, inputs[*i_0][b_x + b_0] * inputs[*i_1][b_x + b_1])
+                    }),
                 ]
                 .sum()
             })
@@ -316,16 +313,13 @@ impl<F: Field> VanillaNode<F> {
         input_r_xs: &[HashMap<usize, F>],
     ) -> F {
         self.inner_eval(eq_r_gs, eq_r_xs, &|gate| {
-            gate.w_1
-                .iter()
-                .map(|(s, (i_0, b_0))| {
-                    if self.input_arity == 1 {
-                        maybe_mul!(s, eq_r_xs[0][*b_0])
-                    } else {
-                        maybe_mul!(s, eq_r_xs[0][*b_0] * input_r_xs[0][i_0])
-                    }
-                })
-                .sum()
+            F::sum(gate.w_1.iter().map(|(s, (i_0, b_0))| {
+                if self.input_arity == 1 {
+                    maybe_mul!(s, eq_r_xs[0][*b_0])
+                } else {
+                    maybe_mul!(s, eq_r_xs[0][*b_0] * input_r_xs[0][i_0])
+                }
+            }))
         })
     }
 
@@ -336,17 +330,14 @@ impl<F: Field> VanillaNode<F> {
         input_r_xs: &[HashMap<usize, F>],
     ) -> F {
         self.inner_eval(eq_r_gs, eq_r_xs, &|gate| {
-            gate.w_2
-                .iter()
-                .map(|(s, (i_0, b_0), (i_1, b_1))| {
-                    let common = eq_r_xs[0][*b_0] * eq_r_xs[1][*b_1];
-                    if self.input_arity == 1 {
-                        maybe_mul!(s, common)
-                    } else {
-                        maybe_mul!(s, common * input_r_xs[0][i_0] * input_r_xs[1][i_1])
-                    }
-                })
-                .sum()
+            F::sum(gate.w_2.iter().map(|(s, (i_0, b_0), (i_1, b_1))| {
+                let common = eq_r_xs[0][*b_0] * eq_r_xs[1][*b_1];
+                if self.input_arity == 1 {
+                    maybe_mul!(s, common)
+                } else {
+                    maybe_mul!(s, common * input_r_xs[0][i_0] * input_r_xs[1][i_1])
+                }
+            }))
         })
     }
 

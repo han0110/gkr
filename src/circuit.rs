@@ -17,8 +17,15 @@ pub struct Circuit<F> {
 impl<F: Field> Circuit<F> {
     pub fn new(dag: DirectedAcyclicGraph<Box<dyn Node<F>>>) -> Self {
         let topo = dag.topo();
-        topo.iter()
-            .for_each(|idx| assert!(!dag.nodes()[*idx].is_input() || dag.succ(*idx).count() > 0));
+        assert!(!topo
+            .iter()
+            .any(|idx| dag.nodes()[*idx].is_input() ^ (dag.predec(*idx).count() == 0)));
+        assert!(!topo.iter().any(|idx| {
+            dag.succ(*idx).any(|succ_idx| {
+                dag.nodes()[*idx].log2_output_size() != dag.nodes()[succ_idx].log2_input_size()
+            })
+        }));
+
         Self { dag, topo }
     }
 
