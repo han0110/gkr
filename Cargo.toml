@@ -1,19 +1,14 @@
-[package]
-name = "gkr"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = [
+    "gkr",
+    "gkr-gadget",
+]
+resolver = "2"
 
-[dependencies]
+[workspace.dependencies]
 halo2_curves = { git = "http://github.com/privacy-scaling-explorations/halo2curves", package = "halo2curves" }
-rand_core = "0.6.4"
-itertools = "0.11.0"
-num-bigint = "0.4.4"
-sha3 = "0.10.8"
 rayon = "1.8.0"
-
-[dev-dependencies]
+itertools = "0.11.0"
+rand_core = "0.6.4"
+rand_chacha = "0.3.1"
 rand = "0.8.5"
-
-[features]
-default = []
-sanity-check = []

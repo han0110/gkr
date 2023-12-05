@@ -11,7 +11,7 @@ impl<T> DirectedAcyclicGraph<T> {
         let edges = (0..nodes.len())
             .map(|idx| {
                 chain![
-                    (idx != 0).then_some((idx - 1, Direction::In)),
+                    (idx != 0).then_some((idx.saturating_sub(1), Direction::In)),
                     (idx != nodes.len() - 1).then_some((idx + 1, Direction::Out)),
                 ]
                 .collect()

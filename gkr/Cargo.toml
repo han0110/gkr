@@ -1,0 +1,20 @@
+[package]
+name = "gkr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+halo2_curves = { workspace = true }
+rayon = { workspace = true }
+itertools = { workspace = true }
+rand_core = { workspace = true }
+rand_chacha = { workspace = true }
+rand = { workspace = true, optional = true }
+
+[dev-dependencies]
+rand = { workspace = true }
+
+[features]
+default = []
+dev = ["dep:rand"]
+sanity-check = []

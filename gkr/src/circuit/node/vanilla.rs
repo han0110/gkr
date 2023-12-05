@@ -572,8 +572,8 @@ pub mod test {
         let mut rng = seeded_std_rng();
         for log2_input_size in 1..16 {
             let (circuit, inputs, values) = grand_product_circuit::<Fr>(log2_input_size, &mut rng);
-            assert_eq!(circuit.evaluate(inputs.clone()), values);
-            run_gkr(&circuit, inputs, &mut rng);
+            run_gkr(&circuit, inputs.clone(), &mut rng);
+            assert_eq!(circuit.evaluate(inputs), values);
         }
     }
 
@@ -582,8 +582,8 @@ pub mod test {
         let mut rng = seeded_std_rng();
         for log2_input_size in 1..16 {
             let (circuit, inputs, values) = grand_sum_circuit::<Fr>(log2_input_size, &mut rng);
-            assert_eq!(circuit.evaluate(inputs.clone()), values);
-            run_gkr(&circuit, inputs, &mut rng);
+            run_gkr(&circuit, inputs.clone(), &mut rng);
+            assert_eq!(circuit.evaluate(inputs), values);
         }
     }
 

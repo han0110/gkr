@@ -5,16 +5,18 @@ use crate::{
     },
     poly::evaluate,
     transcript::{Transcript, TranscriptRead, TranscriptWrite},
-    util::{arithmetic::Field, izip_eq, Itertools},
+    util::{arithmetic::Field, Itertools},
 };
 use std::{io, mem::take};
 
 pub mod circuit;
-pub mod gadget;
 pub mod poly;
 pub mod sum_check;
 pub mod transcript;
 pub mod util;
+
+#[cfg(any(test, feature = "dev"))]
+pub mod test;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -99,52 +101,4 @@ fn combined_claim<F: Field>(
         transcript.squeeze_challenges(claims.len())
     };
     CombinedEvalClaim::new(claims, alphas)
-}
-
-#[cfg(test)]
-mod test {
-    use crate::{
-        circuit::{node::EvalClaim, Circuit},
-        poly::evaluate,
-        prove_gkr,
-        transcript::Keccak256Transcript,
-        util::{arithmetic::PrimeField, izip_eq, test::rand_vec, Itertools, RngCore},
-        verify_gkr,
-    };
-
-    pub fn run_gkr<F: PrimeField>(
-        circuit: &Circuit<F>,
-        inputs: Vec<Vec<F>>,
-        mut rng: impl RngCore,
-    ) {
-        let (values, output_claims) = {
-            let values = circuit.evaluate(inputs.clone());
-            let output_claims = circuit
-                .outputs()
-                .map(|idx| {
-                    let point = rand_vec(circuit.nodes()[idx].log2_output_size(), &mut rng);
-                    let value = evaluate(&values[idx], &point);
-                    EvalClaim::new(point, value)
-                })
-                .collect_vec();
-            (values, output_claims)
-        };
-
-        let proof = {
-            let mut transcript = Keccak256Transcript::default();
-            prove_gkr(circuit, values, output_claims.clone(), &mut transcript).unwrap();
-            transcript.into_proof()
-        };
-
-        let input_claims = {
-            let mut transcript = Keccak256Transcript::from_proof(&proof);
-            verify_gkr(circuit, output_claims, &mut transcript).unwrap()
-        };
-
-        izip_eq!(&inputs, input_claims).for_each(|(input, claims)| {
-            claims
-                .iter()
-                .for_each(|claim| assert_eq!(evaluate(input, claim.point()), claim.value()))
-        });
-    }
 }

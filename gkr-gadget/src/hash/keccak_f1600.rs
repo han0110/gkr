@@ -1,4 +1,4 @@
-use crate::{
+use gkr::{
     circuit::{
         node::{Node, VanillaGate, VanillaNode},
         Circuit, NodeId,
@@ -258,47 +258,34 @@ fn not_lhs_and_rhs_gates<F: Field>(
 
 #[cfg(test)]
 mod test {
-    use crate::{
+    use crate::hash::keccak_f1600::{configure_keccak_f1600, LOG2_STATE_SIZE, STATE_SIZE};
+    use gkr::{
         circuit::{node::InputNode, Circuit},
-        gadget::keccak_f1600::{configure_keccak_f1600, LOG2_STATE_SIZE},
         test::run_gkr,
         util::{
             arithmetic::{bool_to_felt, try_felt_to_bool, Field},
-            chain,
+            chain, izip,
             test::seeded_std_rng,
-            // RngCore,
+            RngCore,
         },
     };
     use halo2_curves::bn256::Fr;
-    use itertools::Itertools;
-    use std::iter;
+    use std::{array::from_fn, iter};
 
     #[test]
     fn keccak_f1600() {
-        #[rustfmt::skip]
-        const STATE: [u64; 25] = [
-            0x00, 0x01, 0x02, 0x03, 0x04,
-            0x05, 0x06, 0x07, 0x08, 0x09,
-            0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-            0x0f, 0x10, 0x11, 0x12, 0x13,
-            0x14, 0x15, 0x16, 0x17, 0x18,
-        ];
-        #[rustfmt::skip]
-        const STATE_PRIME: [u64; 25] = [
-            0x8374b05252ed8115, 0x1df7a676b6569400, 0xf765194b8a51797d, 0x20477b43d1760545, 0xd15f8ba4f3f6606a,
-            0xa1d7144f7c8dd493, 0x30d193965138fd3f, 0x487e9472951be3be, 0x0cf3a858cbda7a5a, 0x2fe54e389bb17f88,
-            0x0b7338de0d9f268f, 0x55efdff58b256d7f, 0xc8353e94eb2c3e6a, 0x2e2af6948c901f11, 0xe873de0cca309da6,
-            0xf7afc26c944d31e2, 0xa0f5ea808cc415d7, 0x53f531437e3ed8cf, 0x777f1f3b43a4d221, 0xfd0ca63cb499e985,
-            0xd4c055c0c5d12330, 0xa72fe58aa6e0a7df, 0x421af5937c9948a3, 0x5e16103071340888, 0xd153f43a297e4a33,
-        ];
         let mut rng = seeded_std_rng();
-        for log2_reps in 0..5 {
-            let num_reps = 1 << log2_reps;
+        for num_reps in (0..5).map(|log2| 1 << log2) {
             let circuit = keccak_f1600_circuit::<Fr>(num_reps);
-            let input = input(STATE, num_reps);
+            let input = rand_input(num_reps, &mut rng);
             let output = circuit.evaluate(vec![input.clone()]).pop().unwrap();
-            assert_eq!(felts_to_words(&output)[..25], STATE_PRIME);
-            run_gkr(&circuit, vec![input], &mut rng)
+            run_gkr(&circuit, vec![input.clone()], &mut rng);
+            let [input, output] = [&input, &output]
+                .map(|value| value.chunks(1 << LOG2_STATE_SIZE).map(felts_to_state));
+            izip!(input, output).for_each(|(mut input, output)| {
+                tiny_keccak::keccakf(&mut input);
+                assert_eq!(output, input);
+            });
         }
     }
 
@@ -309,33 +296,35 @@ mod test {
         circuit
     }
 
-    // fn rand_state(mut rng: impl RngCore) -> [u64; 25] {
-    //     from_fn(|_| rng.next_u64())
-    // }
+    fn rand_input<F: Field>(num_reps: usize, mut rng: impl RngCore) -> Vec<F> {
+        iter::repeat_with(|| {
+            let state_bits = state_to_felts(rand_state(&mut rng));
+            chain![state_bits, iter::repeat(F::ZERO)].take(1 << LOG2_STATE_SIZE)
+        })
+        .take(num_reps.next_power_of_two())
+        .flatten()
+        .collect()
+    }
 
-    fn word_to_felts<F: Field>(word: u64) -> impl Iterator<Item = F> {
-        (0..u64::BITS)
-            .rev()
-            .map(move |idx| (word >> idx) & 1 == 1)
+    fn rand_state(mut rng: impl RngCore) -> [u64; 25] {
+        from_fn(|_| rng.next_u64())
+    }
+
+    fn state_to_felts<F: Field>(state: [u64; 25]) -> impl Iterator<Item = F> {
+        state
+            .into_iter()
+            .flat_map(|word| (0..u64::BITS).rev().map(move |idx| (word >> idx) & 1 == 1))
             .map(bool_to_felt)
     }
 
-    fn felts_to_words<F: Field>(output: &[F]) -> Vec<u64> {
-        Vec::from_iter(output.chunks(64).map(|word| {
+    fn felts_to_state<F: Field>(output: &[F]) -> [u64; 25] {
+        Vec::from_iter(output[..STATE_SIZE].chunks(64).map(|word| {
             word.iter()
                 .copied()
                 .map(try_felt_to_bool)
                 .fold(0, |acc, bit| (acc << 1) + bit.unwrap() as u64)
         }))
-    }
-
-    fn input<F: Field>(state: [u64; 25], num_reps: usize) -> Vec<F> {
-        let state_bits = state.into_iter().flat_map(word_to_felts).collect_vec();
-        iter::repeat_with(|| {
-            chain![state_bits.clone(), iter::repeat(F::ZERO)].take(1 << LOG2_STATE_SIZE)
-        })
-        .take(num_reps.next_power_of_two())
-        .flatten()
-        .collect()
+        .try_into()
+        .unwrap()
     }
 }
