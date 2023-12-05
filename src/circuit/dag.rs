@@ -1,94 +1,55 @@
-use crate::util::Itertools;
-use std::ops::Deref;
+use crate::util::{chain, Itertools};
 
 #[derive(Clone, Debug)]
 pub struct DirectedAcyclicGraph<T> {
     nodes: Vec<T>,
-    adj_mat: AdjacencyMatrix,
+    edges: Vec<Vec<(usize, Direction)>>,
 }
 
 impl<T> DirectedAcyclicGraph<T> {
-    pub fn new(nodes: Vec<T>, adj_mat: AdjacencyMatrix) -> Self {
-        assert_eq!(nodes.len(), adj_mat.0.len());
-        assert!(adj_mat.topo().is_some());
-
-        Self { nodes, adj_mat }
+    pub(super) fn linear(nodes: Vec<T>) -> Self {
+        let edges = (0..nodes.len())
+            .map(|idx| {
+                chain![
+                    (idx != 0).then_some((idx - 1, Direction::In)),
+                    (idx != nodes.len() - 1).then_some((idx + 1, Direction::Out)),
+                ]
+                .collect()
+            })
+            .collect();
+        Self { nodes, edges }
     }
 
-    pub fn linear(nodes: Vec<T>) -> Self {
-        let mut adj_mat = AdjacencyMatrix::new(nodes.len());
-        (0..nodes.len()).for_each(|i| {
-            if i != 0 {
-                adj_mat.0[i][i - 1] = Some(Direction::In)
-            }
-            if i != nodes.len() - 1 {
-                adj_mat.0[i][i + 1] = Some(Direction::Out)
-            }
-        });
-        Self::new(nodes, adj_mat)
-    }
-
-    pub fn insert(&mut self, node: T) -> NodeId {
-        let id = self.nodes.len();
-        self.nodes.push(node);
-        self.adj_mat.resize(self.nodes.len());
-        NodeId(id)
-    }
-
-    pub fn link(&mut self, NodeId(from): NodeId, NodeId(to): NodeId) {
-        let adj_mat = &mut self.adj_mat.0;
-        assert!(matches!(adj_mat[from][to], None | Some(Direction::Out)));
-        assert!(matches!(adj_mat[to][from], None | Some(Direction::In)));
-
-        adj_mat[from][to] = Some(Direction::Out);
-        adj_mat[to][from] = Some(Direction::In);
-
-        assert!(self.adj_mat.topo().is_some());
-    }
-
-    pub fn nodes(&self) -> &[T] {
+    pub(crate) fn nodes(&self) -> &[T] {
         &self.nodes
     }
 
-    pub fn adj_mat(&self) -> &AdjacencyMatrix {
-        &self.adj_mat
+    pub(crate) fn inputs(&self) -> impl Iterator<Item = usize> + '_ {
+        self.indegs().positions(|deg| deg == 0)
     }
 
-    pub fn topo(&self) -> Vec<usize> {
-        self.adj_mat.topo().unwrap()
-    }
-}
-
-impl<T> Default for DirectedAcyclicGraph<T> {
-    fn default() -> Self {
-        Self {
-            nodes: Vec::new(),
-            adj_mat: AdjacencyMatrix::default(),
-        }
-    }
-}
-
-impl<T> Deref for DirectedAcyclicGraph<T> {
-    type Target = AdjacencyMatrix;
-
-    fn deref(&self) -> &Self::Target {
-        &self.adj_mat
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct NodeId(usize);
-
-#[derive(Clone, Debug, Default)]
-pub struct AdjacencyMatrix(Vec<Vec<Edge>>);
-
-impl AdjacencyMatrix {
-    pub fn new(len: usize) -> Self {
-        Self(vec![vec![None; len]; len])
+    pub(crate) fn outputs(&self) -> impl Iterator<Item = usize> + '_ {
+        self.outdegs().positions(|deg| deg == 0)
     }
 
-    pub fn topo(&self) -> Option<Vec<usize>> {
-        let mut topo = Vec::with_capacity(self.0.len());
+    pub(crate) fn predec(&self, idx: usize) -> impl Iterator<Item = usize> + '_ {
+        self.adjs(idx, Direction::In)
+    }
+
+    pub(crate) fn succ(&self, idx: usize) -> impl Iterator<Item = usize> + '_ {
+        self.adjs(idx, Direction::Out)
+    }
+
+    pub(super) fn indegs(&self) -> impl Iterator<Item = usize> + '_ {
+        self.degs(Direction::In)
+    }
+
+    pub(super) fn outdegs(&self) -> impl Iterator<Item = usize> + '_ {
+        self.degs(Direction::Out)
+    }
+
+    pub(super) fn topo(&self) -> Vec<usize> {
+        let mut topo = Vec::with_capacity(self.nodes.len());
         let mut indegs = self.indegs().collect_vec();
         let mut queue = self.inputs().collect_vec();
 
@@ -102,53 +63,57 @@ impl AdjacencyMatrix {
             });
         }
 
-        (topo.len() == self.0.len()).then_some(topo)
-    }
+        assert_eq!(topo.len(), self.nodes.len());
 
-    pub fn predec(&self, idx: usize) -> impl Iterator<Item = usize> + '_ {
-        self.adjs(idx, Direction::In)
-    }
-
-    pub fn succ(&self, idx: usize) -> impl Iterator<Item = usize> + '_ {
-        self.adjs(idx, Direction::Out)
-    }
-
-    pub fn indegs(&self) -> impl Iterator<Item = usize> + '_ {
-        self.degs(Direction::In)
-    }
-
-    pub fn outdegs(&self) -> impl Iterator<Item = usize> + '_ {
-        self.degs(Direction::Out)
-    }
-
-    pub fn inputs(&self) -> impl Iterator<Item = usize> + '_ {
-        self.indegs().positions(|deg| deg == 0)
-    }
-
-    pub fn outputs(&self) -> impl Iterator<Item = usize> + '_ {
-        self.outdegs().positions(|deg| deg == 0)
-    }
-
-    pub fn resize(&mut self, size: usize) {
-        self.0.iter_mut().for_each(|e| e.resize(size, None));
-        self.0.resize(size, vec![None; size]);
+        topo
     }
 
     fn adjs(&self, idx: usize, direction: Direction) -> impl Iterator<Item = usize> + '_ {
-        self.0[idx].iter().positions(move |e| *e == Some(direction))
+        self.edges[idx]
+            .iter()
+            .filter_map(move |edge| (edge.1 == direction).then_some(edge.0))
     }
 
     fn degs(&self, direction: Direction) -> impl Iterator<Item = usize> + '_ {
-        self.0
+        self.edges
             .iter()
-            .map(move |edges| edges.iter().filter(move |e| **e == Some(direction)).count())
+            .map(move |edges| edges.iter().filter(|edge| edge.1 == direction).count())
+    }
+
+    pub(super) fn insert(&mut self, node: T) -> NodeId {
+        let id = self.nodes.len();
+        self.nodes.push(node);
+        self.edges.resize_with(self.nodes.len(), Vec::new);
+        NodeId(id)
+    }
+
+    pub(super) fn link(&mut self, from: NodeId, to: NodeId) {
+        let NodeId(from) = from;
+        let NodeId(to) = to;
+        assert_ne!(from, to);
+
+        assert!(!self.edges[from].iter().any(|(idx, _)| *idx == to));
+        assert!(!self.edges[to].iter().any(|(idx, _)| *idx == from));
+
+        self.edges[from].push((to, Direction::Out));
+        self.edges[to].push((from, Direction::In));
     }
 }
 
-pub type Edge = Option<Direction>;
+impl<T> Default for DirectedAcyclicGraph<T> {
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NodeId(pub(super) usize);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Direction {
+enum Direction {
     In,
     Out,
 }

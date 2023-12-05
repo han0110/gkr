@@ -31,3 +31,21 @@ pub fn powers<F: Field>(base: F) -> impl Iterator<Item = F> {
 pub fn squares<F: Field>(base: F) -> impl Iterator<Item = F> {
     iter::successors(Some(base), move |square| Some(square.square()))
 }
+
+pub fn bool_to_felt<F: Field>(bit: bool) -> F {
+    if bit {
+        F::ONE
+    } else {
+        F::ZERO
+    }
+}
+
+pub fn try_felt_to_bool<F: Field>(felt: F) -> Option<bool> {
+    if felt == F::ONE {
+        Some(true)
+    } else if felt == F::ZERO {
+        Some(false)
+    } else {
+        None
+    }
+}

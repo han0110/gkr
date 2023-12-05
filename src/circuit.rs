@@ -1,62 +1,64 @@
 use crate::{
-    circuit::{dag::AdjacencyMatrix, node::Node},
-    util::arithmetic::Field,
+    circuit::{dag::DirectedAcyclicGraph, node::Node},
+    util::{arithmetic::Field, izip_eq, Itertools},
 };
+use std::ops::Deref;
 
 mod dag;
 pub mod node;
 
-pub use dag::DirectedAcyclicGraph;
+pub use dag::NodeId;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Circuit<F> {
     dag: DirectedAcyclicGraph<Box<dyn Node<F>>>,
     topo: Vec<usize>,
 }
 
 impl<F: Field> Circuit<F> {
-    pub fn new(dag: DirectedAcyclicGraph<Box<dyn Node<F>>>) -> Self {
+    pub fn linear(nodes: Vec<Box<dyn Node<F>>>) -> Self {
+        let dag = DirectedAcyclicGraph::linear(nodes);
         let topo = dag.topo();
-        assert!(!topo
-            .iter()
-            .any(|idx| dag.nodes()[*idx].is_input() ^ (dag.predec(*idx).count() == 0)));
-        assert!(!topo.iter().any(|idx| {
-            dag.succ(*idx).any(|succ_idx| {
-                dag.nodes()[*idx].log2_output_size() != dag.nodes()[succ_idx].log2_input_size()
-            })
-        }));
-
         Self { dag, topo }
     }
 
-    pub fn nodes(&self) -> &[Box<dyn Node<F>>] {
-        self.dag.nodes()
+    pub fn insert(&mut self, node: impl Node<F> + 'static) -> NodeId {
+        let node = node.into_boxed();
+        self.dag.insert(node)
     }
 
-    pub fn adj_mat(&self) -> &AdjacencyMatrix {
-        self.dag.adj_mat()
-    }
-
-    pub fn topo_iter(&self) -> impl DoubleEndedIterator<Item = (usize, &dyn Node<F>)> {
-        self.topo.iter().map(|idx| (*idx, &*self.nodes()[*idx]))
+    pub fn link(&mut self, from: NodeId, to: NodeId) {
+        assert_eq!(
+            self.nodes()[from.0].log2_output_size(),
+            self.nodes()[to.0].log2_input_size()
+        );
+        assert!(!self.nodes()[to.0].is_input());
+        self.dag.link(from, to);
+        self.topo = self.dag.topo();
     }
 
     pub fn evaluate(&self, inputs: Vec<Vec<F>>) -> Vec<Vec<F>> {
-        let mut inputs = inputs.into_iter();
-        let values = self.topo_iter().fold(
-            vec![Vec::new(); self.nodes().len()],
-            |mut values, (idx, node)| {
-                values[idx] = if node.is_input() {
-                    inputs.next().unwrap()
-                } else {
-                    node.evaluate(self.dag.predec(idx).map(|idx| &values[idx]).collect())
-                };
-                values
-            },
-        );
+        let mut values = vec![Vec::new(); self.nodes().len()];
 
-        assert!(inputs.next().is_none());
+        izip_eq!(self.dag.inputs(), inputs).for_each(|(idx, input)| values[idx] = input);
+        self.topo_iter()
+            .filter(|(_, node)| !node.is_input())
+            .for_each(|(idx, node)| {
+                values[idx] = node.evaluate(self.dag.predec(idx).map(|idx| &values[idx]).collect())
+            });
 
         values
+    }
+
+    pub(crate) fn topo_iter(&self) -> impl DoubleEndedIterator<Item = (usize, &dyn Node<F>)> {
+        self.topo.iter().map(|idx| (*idx, &*self.nodes()[*idx]))
+    }
+}
+
+impl<F> Deref for Circuit<F> {
+    type Target = DirectedAcyclicGraph<Box<dyn Node<F>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.dag
     }
 }

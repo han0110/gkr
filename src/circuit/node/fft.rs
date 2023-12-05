@@ -315,7 +315,7 @@ mod test {
                 input::InputNode,
                 Node,
             },
-            Circuit, DirectedAcyclicGraph,
+            Circuit,
         },
         test::run_gkr,
         util::{
@@ -341,11 +341,11 @@ mod test {
         rng: impl RngCore,
     ) -> (Circuit<F>, Vec<Vec<F>>, Vec<Vec<F>>) {
         let nodes = vec![
-            InputNode::new(log2_input_size).into_boxed(),
+            InputNode::new(log2_input_size, 1).into_boxed(),
             FftNode::forward(log2_input_size).into_boxed(),
             FftNode::inverse(log2_input_size).into_boxed(),
         ];
-        let circuit = Circuit::new(DirectedAcyclicGraph::linear(nodes));
+        let circuit = Circuit::linear(nodes);
         let input = rand_vec(1 << log2_input_size, rng);
         let input_prime = {
             let omega = root_of_unity(log2_input_size);

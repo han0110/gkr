@@ -17,21 +17,20 @@ impl<F: Field> SumCheckFunction<F> for Quadratic {
 
     fn compute_sum(&self, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F> {
         assert_eq!(polys.len() % 2, 0);
+        let (a, b) = polys.split_at(polys.len() >> 1);
 
         if cfg!(feature = "sanity-check") {
             assert_eq!(
-                polys
-                    .par_chunks(2)
-                    .flat_map(|polys| izip_par!(&polys[0][..], &polys[1][..]).map(|(a, b)| *a * b))
+                izip_par!(a, b)
+                    .flat_map(|(a, b)| izip_par!(&a[..], &b[..]).map(|(a, b)| *a * b))
                     .sum::<F>(),
                 claim
             )
         }
 
-        let AdditiveArray([coeff_0, coeff_2]) = polys
-            .par_chunks(2)
-            .flat_map(|polys| {
-                izip_par!(&polys[0][..], &polys[0][1..], &polys[1][..], &polys[1][1..])
+        let AdditiveArray([coeff_0, coeff_2]) = izip_par!(a, b)
+            .flat_map(|(a, b)| {
+                izip_par!(&a[..], &a[1..], &b[..], &b[1..])
                     .step_by(2)
                     .fold_with(AdditiveArray::default(), |mut coeffs, values| {
                         let (a_lo, a_hi, b_lo, b_hi) = values;

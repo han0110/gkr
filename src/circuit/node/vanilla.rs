@@ -9,7 +9,7 @@ use crate::{
         arithmetic::{inner_product, Field},
         chain,
         collection::{AdditiveVec, Hadamard},
-        izip, izip_eq, izip_par, Itertools,
+        izip, izip_par, Itertools,
     },
     Error,
 };
@@ -86,7 +86,7 @@ impl<F: Field> Node<F> for VanillaNode<F> {
                 let claim = claim - self.sum_check_eval(&eq_r_gs, &eq_r_xs, &input_r_xs);
                 prove_sum_check(&Quadratic, claim, polys, transcript)?
             };
-            let input_r_x_is = evals.into_iter().skip(1).step_by(2).collect_vec();
+            let input_r_x_is = evals.into_iter().skip(indices.len()).collect_vec();
             transcript.write_felts(&input_r_x_is)?;
 
             claim = subclaim;
@@ -181,6 +181,14 @@ impl<F: Field> VanillaNode<F> {
         }
     }
 
+    pub fn log2_sub_input_size(&self) -> usize {
+        self.log2_sub_input_size
+    }
+
+    pub fn log2_sub_output_size(&self) -> usize {
+        self.log2_sub_output_size
+    }
+
     pub fn log2_reps(&self) -> usize {
         self.log2_reps
     }
@@ -220,7 +228,7 @@ impl<F: Field> VanillaNode<F> {
         let inputs = self.input_indices[phase]
             .iter()
             .map(|input| MultilinearPoly::new(inputs[*input].clone()));
-        Vec::from_iter(izip_eq!(wirings, inputs).flat_map(|(wiring, input)| [wiring, input]))
+        chain![wirings, inputs].collect()
     }
 
     fn phase_0_wiring(&self, inputs: &[&Vec<F>], eq_r_g_prime: &[F]) -> Vec<MultilinearPoly<F>> {
@@ -367,9 +375,9 @@ impl<F: Field> VanillaNode<F> {
     ) -> Vec<Vec<EvalClaim<F>>> {
         (0..self.input_arity)
             .map(|input| {
-                izip!(&self.input_indices, r_xs, input_r_xs)
-                    .filter(|(inputs, _, _)| inputs.contains(&input))
-                    .map(|(_, r_x_i, input_r_x_is)| {
+                izip!(r_xs, input_r_xs)
+                    .filter(|(_, input_r_xs)| input_r_xs.contains_key(&input))
+                    .map(|(r_x_i, input_r_x_is)| {
                         EvalClaim::new(r_x_i.clone(), input_r_x_is[&input])
                     })
                     .collect()
@@ -407,41 +415,54 @@ impl<F> VanillaGate<F> {
     }
 
     pub fn constant(constant: F) -> Self {
-        Self {
-            w_0: Some(constant),
-            ..Default::default()
-        }
+        Self::new(Some(constant), Vec::new(), Vec::new())
+    }
+
+    pub fn relay(b: Input) -> Self {
+        Self::new(None, vec![(None, b)], Vec::new())
     }
 
     pub fn add(b_0: Input, b_1: Input) -> Self {
-        Self {
-            w_1: vec![(None, b_0), (None, b_1)],
-            ..Default::default()
-        }
+        Self::new(None, vec![(None, b_0), (None, b_1)], Vec::new())
     }
 
     pub fn sub(b_0: Input, b_1: Input) -> Self
     where
         F: Field,
     {
-        Self {
-            w_1: vec![(None, b_0), (Some(-F::ONE), b_1)],
-            ..Default::default()
-        }
+        Self::new(None, vec![(None, b_0), (Some(-F::ONE), b_1)], Vec::new())
     }
 
     pub fn mul(b_0: Input, b_1: Input) -> Self {
-        Self {
-            w_2: vec![(None, b_0, b_1)],
-            ..Default::default()
-        }
+        Self::new(None, Vec::new(), vec![(None, b_0, b_1)])
     }
 
     pub fn sum(bs: impl IntoIterator<Item = Input>) -> Self {
-        Self {
-            w_1: bs.into_iter().map(|b| (None, b)).collect(),
-            ..Default::default()
-        }
+        let w_1 = bs.into_iter().map(|b| (None, b)).collect();
+        Self::new(None, w_1, Vec::new())
+    }
+
+    pub fn and(b_0: Input, b_1: Input) -> Self {
+        Self::mul(b_0, b_1)
+    }
+
+    pub fn xor(b_0: Input, b_1: Input) -> Self
+    where
+        F: Field,
+    {
+        let w_1 = vec![(None, b_0), (None, b_1)];
+        let w_2 = vec![(Some(-F::ONE.double()), b_0, b_1)];
+        Self::new(None, w_1, w_2)
+    }
+
+    pub fn xnor(b_0: Input, b_1: Input) -> Self
+    where
+        F: Field,
+    {
+        let w_0 = Some(F::ONE);
+        let w_1 = vec![(Some(-F::ONE), b_0), (Some(-F::ONE), b_1)];
+        let w_2 = vec![(Some(F::ONE.double()), b_0, b_1)];
+        Self::new(w_0, w_1, w_2)
     }
 
     pub fn w_0(&self) -> &Option<F> {
@@ -477,7 +498,6 @@ use {add_or_insert, maybe_mul};
 pub mod test {
     use crate::{
         circuit::{
-            dag::DirectedAcyclicGraph,
             node::{
                 input::InputNode,
                 vanilla::{VanillaGate, VanillaNode},
@@ -595,14 +615,14 @@ pub mod test {
         };
 
         let nodes = chain![
-            [InputNode::new(log2_input_size).into_boxed()],
+            [InputNode::new(log2_input_size, 1).into_boxed()],
             (0..log2_input_size)
                 .rev()
                 .map(|idx| VanillaNode::new(1, 1, vec![VanillaGate::mul((0, 0), (0, 1))], 1 << idx))
                 .map(Node::into_boxed)
         ]
         .collect_vec();
-        let circuit = Circuit::new(DirectedAcyclicGraph::linear(nodes));
+        let circuit = Circuit::linear(nodes);
         let input = rand_vec(1 << log2_input_size, rng);
         let outputs = iter::successors(Some(input.clone()), |input| succ(input)).collect_vec();
 
@@ -619,14 +639,14 @@ pub mod test {
         };
 
         let nodes = chain![
-            [InputNode::new(log2_input_size).into_boxed()],
+            [InputNode::new(log2_input_size, 1).into_boxed()],
             (0..log2_input_size)
                 .rev()
                 .map(|idx| VanillaNode::new(1, 1, vec![VanillaGate::add((0, 0), (0, 1))], 1 << idx))
                 .map(Node::into_boxed)
         ]
         .collect_vec();
-        let circuit = Circuit::new(DirectedAcyclicGraph::linear(nodes));
+        let circuit = Circuit::linear(nodes);
         let input = rand_vec(1 << log2_input_size, rng);
         let values = iter::successors(Some(input.clone()), |input| succ(input)).collect_vec();
 
@@ -641,7 +661,7 @@ pub mod test {
             .take(num_nodes)
             .collect_vec();
         let nodes = chain![
-            [InputNode::new(log2_sizes[0]).into_boxed()],
+            [InputNode::new(log2_sizes[0], 1).into_boxed()],
             log2_sizes
                 .iter()
                 .tuple_windows()
@@ -650,7 +670,7 @@ pub mod test {
                 })
         ]
         .collect_vec();
-        let circuit = Circuit::new(DirectedAcyclicGraph::linear(nodes));
+        let circuit = Circuit::linear(nodes);
         let input = rand_vec(1 << log2_sizes[0], rng);
         let values = circuit.evaluate(vec![input.clone()]);
 
@@ -664,22 +684,28 @@ pub mod test {
             .map(|idx| rand_range(1..=idx, &mut rng))
             .collect_vec();
         let nodes = chain![
-            [InputNode::new(log2_size).into_boxed()],
+            [InputNode::new(log2_size, 1).into_boxed()],
             input_arities.iter().map(|input_arity| {
                 VanillaNode::rand(*input_arity, log2_size, log2_size, &mut rng).into_boxed()
             })
         ]
         .collect_vec();
         let circuit = {
-            let mut dag = DirectedAcyclicGraph::default();
-            let nodes = nodes.into_iter().map(|node| dag.insert(node)).collect_vec();
+            let mut circuit = Circuit::default();
+            let nodes = nodes
+                .into_iter()
+                .map(|node| circuit.insert(node))
+                .collect_vec();
             izip!(1.., &nodes[1..], &input_arities).for_each(|(idx, to, input_arity)| {
                 rand_unique(*input_arity, |rng| rand_range(0..idx, rng), &mut rng)
                     .into_iter()
-                    .for_each(|from| dag.link(nodes[from], *to))
+                    .for_each(|from| circuit.link(nodes[from], *to))
             });
-            assert_eq!(dag.indegs().skip(1).collect_vec(), input_arities.to_vec());
-            Circuit::new(dag)
+            assert_eq!(
+                circuit.indegs().skip(1).collect_vec(),
+                input_arities.to_vec()
+            );
+            circuit
         };
         let input = rand_vec(1 << log2_size, rng);
         let values = circuit.evaluate(vec![input.clone()]);
