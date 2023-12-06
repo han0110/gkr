@@ -273,16 +273,14 @@ impl<F: Field> VanillaNode<F> {
     {
         let buf = (0..self.output_size())
             .into_par_iter()
-            .fold_with(vec![HashMap::new(); self.input_arity], |mut buf, b_g| {
+            .fold_with(vec![Vec::new(); self.input_arity], |mut buf, b_g| {
                 let b_x = (b_g >> self.log2_sub_output_size) << self.log2_sub_input_size;
                 let gate = &self.gates[b_g % self.gates.len()];
-                f(b_g, b_x, gate).for_each(|(i, b, v)| add_or_insert!(buf[i], b, v));
+                f(b_g, b_x, gate).for_each(|(i, b, v)| buf[i].push((b, v)));
                 buf
             })
             .reduce_with(|mut acc, item| {
-                izip!(&mut acc, item).for_each(|(acc, item)| {
-                    item.iter().for_each(|(b, v)| add_or_insert!(acc, *b, *v))
-                });
+                izip!(&mut acc, item).for_each(|(acc, item)| acc.extend(item));
                 acc
             })
             .unwrap();
@@ -484,15 +482,7 @@ macro_rules! maybe_mul {
     };
 }
 
-macro_rules! add_or_insert {
-    ($map:expr, $key:expr, $value:expr) => {{
-        $map.entry($key)
-            .and_modify(|acc| *acc += $value)
-            .or_insert_with(|| $value);
-    }};
-}
-
-use {add_or_insert, maybe_mul};
+use maybe_mul;
 
 #[cfg(test)]
 pub mod test {
@@ -572,7 +562,7 @@ pub mod test {
         let mut rng = seeded_std_rng();
         for log2_input_size in 1..16 {
             let (circuit, inputs, values) = grand_product_circuit::<Fr>(log2_input_size, &mut rng);
-            run_gkr(&circuit, inputs.clone(), &mut rng);
+            run_gkr(&circuit, &inputs, &mut rng);
             assert_eq!(circuit.evaluate(inputs), values);
         }
     }
@@ -582,7 +572,7 @@ pub mod test {
         let mut rng = seeded_std_rng();
         for log2_input_size in 1..16 {
             let (circuit, inputs, values) = grand_sum_circuit::<Fr>(log2_input_size, &mut rng);
-            run_gkr(&circuit, inputs.clone(), &mut rng);
+            run_gkr(&circuit, &inputs, &mut rng);
             assert_eq!(circuit.evaluate(inputs), values);
         }
     }
@@ -592,7 +582,7 @@ pub mod test {
         let mut rng = seeded_std_rng();
         for _ in 1..16 {
             let (circuit, inputs, _) = rand_linear_circuit::<Fr>(&mut rng);
-            run_gkr(&circuit, inputs, &mut rng);
+            run_gkr(&circuit, &inputs, &mut rng);
         }
     }
 
@@ -601,7 +591,7 @@ pub mod test {
         let mut rng = seeded_std_rng();
         for _ in 1..16 {
             let (circuit, inputs, _) = rand_dag_circuit::<Fr>(&mut rng);
-            run_gkr(&circuit, inputs, &mut rng);
+            run_gkr(&circuit, &inputs, &mut rng);
         }
     }
 

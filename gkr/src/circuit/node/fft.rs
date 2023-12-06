@@ -331,8 +331,8 @@ mod test {
         let mut rng = seeded_std_rng();
         for log2_input_size in 1..16 {
             let (circuit, inputs, values) = fft_and_then_ifft_circuit(log2_input_size, &mut rng);
-            assert_eq!(circuit.evaluate(inputs.clone()), values);
-            run_gkr::<Fr>(&circuit, inputs, &mut rng);
+            run_gkr::<Fr>(&circuit, &inputs, &mut rng);
+            assert_eq!(circuit.evaluate(inputs), values);
         }
     }
 

@@ -24,6 +24,10 @@ impl<T> DirectedAcyclicGraph<T> {
         &self.nodes
     }
 
+    pub fn node(&self, id: NodeId) -> &T {
+        &self.nodes[id.0]
+    }
+
     pub(crate) fn inputs(&self) -> impl Iterator<Item = usize> + '_ {
         self.indegs().positions(|deg| deg == 0)
     }

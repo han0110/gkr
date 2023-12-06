@@ -23,6 +23,13 @@ pub fn rand_bool(mut rng: impl RngCore) -> bool {
     rng.gen_bool(0.5)
 }
 
+pub fn rand_bytes(n: usize, mut rng: impl RngCore) -> Vec<u8> {
+    iter::repeat_with(|| rng.next_u64().to_le_bytes())
+        .flatten()
+        .take(n)
+        .collect()
+}
+
 pub fn rand_array<F: Field, const N: usize>(mut rng: impl RngCore) -> [F; N] {
     array::from_fn(|_| F::random(&mut rng))
 }

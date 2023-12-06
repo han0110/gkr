@@ -14,7 +14,15 @@ tiny-keccak = { version = "2.0.2", features = ["keccak"] }
 
 [dev-dependencies]
 gkr = { path = "../gkr", features = ["dev"] }
+criterion = { workspace = true }
+pprof = { workspace = true, features = ["criterion", "flamegraph"] }
 
 [features]
 default = []
+dev = ["gkr/dev"]
 sanity-check = ["gkr/sanity-check"]
+
+[[bench]]
+name = "keccak256"
+harness = false
+required-features = ["dev"]

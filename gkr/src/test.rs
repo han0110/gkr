@@ -7,9 +7,9 @@ use crate::{
     verify_gkr,
 };
 
-pub fn run_gkr<F: PrimeField>(circuit: &Circuit<F>, inputs: Vec<Vec<F>>, mut rng: impl RngCore) {
+pub fn run_gkr<F: PrimeField>(circuit: &Circuit<F>, inputs: &[Vec<F>], mut rng: impl RngCore) {
     let (values, output_claims) = {
-        let values = circuit.evaluate(inputs.clone());
+        let values = circuit.evaluate(inputs.to_vec());
         let output_claims = circuit
             .outputs()
             .map(|idx| {
@@ -23,16 +23,16 @@ pub fn run_gkr<F: PrimeField>(circuit: &Circuit<F>, inputs: Vec<Vec<F>>, mut rng
 
     let proof = {
         let mut transcript = StdRngTranscript::default();
-        prove_gkr(circuit, values, output_claims.clone(), &mut transcript).unwrap();
+        prove_gkr(circuit, &values, &output_claims, &mut transcript).unwrap();
         transcript.into_proof()
     };
 
     let input_claims = {
         let mut transcript = StdRngTranscript::from_proof(&proof);
-        verify_gkr(circuit, output_claims, &mut transcript).unwrap()
+        verify_gkr(circuit, &output_claims, &mut transcript).unwrap()
     };
 
-    izip_eq!(&inputs, input_claims).for_each(|(input, claims)| {
+    izip_eq!(inputs, input_claims).for_each(|(input, claims)| {
         claims
             .iter()
             .for_each(|claim| assert_eq!(evaluate(input, claim.point()), claim.value()))
