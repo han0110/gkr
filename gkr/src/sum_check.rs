@@ -7,6 +7,7 @@ use crate::{
     },
     Error,
 };
+use rayon::prelude::*;
 use std::fmt::Debug;
 
 pub mod generic;
@@ -38,7 +39,7 @@ pub fn prove_sum_check<F: Field>(
         let r_i = transcript.squeeze_challenge();
 
         claim = horner(&sum, &r_i);
-        polys.iter_mut().for_each(|poly| poly.fix_var(&r_i));
+        polys.par_iter_mut().for_each(|poly| poly.fix_var(&r_i));
         r.push(r_i);
     }
 

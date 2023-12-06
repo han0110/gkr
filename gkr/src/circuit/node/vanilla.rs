@@ -194,13 +194,13 @@ impl<F: Field> VanillaNode<F> {
     }
 
     fn eq_r_gs(&self, r_gs: &[Vec<F>], alphas: &[F]) -> Vec<PartialEqPoly<F>> {
-        izip!(r_gs, alphas)
+        izip_par!(r_gs, alphas)
             .map(|(r_g, alpha)| PartialEqPoly::new(r_g, self.log2_sub_output_size, *alpha))
             .collect()
     }
 
     fn eq_r_g_prime(&self, eq_r_gs: &[PartialEqPoly<F>]) -> Vec<F> {
-        eq_r_gs.iter().map(PartialEqPoly::expand).hada_sum()
+        eq_r_gs.par_iter().map(PartialEqPoly::expand).hada_sum()
     }
 
     fn eq_r_x(&self, r_x: &[F], input_r_xs: &HashMap<usize, F>) -> PartialEqPoly<F> {

@@ -30,14 +30,14 @@ impl<F: Field> SumCheckFunction<F> for Quadratic {
 
         let AdditiveArray([coeff_0, coeff_2]) = izip_par!(a, b)
             .flat_map(|(a, b)| {
-                izip_par!(&a[..], &a[1..], &b[..], &b[1..])
-                    .step_by(2)
-                    .fold_with(AdditiveArray::default(), |mut coeffs, values| {
-                        let (a_lo, a_hi, b_lo, b_hi) = values;
-                        coeffs[0] += *a_lo * b_lo;
-                        coeffs[1] += (*a_hi - a_lo) * (*b_hi - b_lo);
+                izip_par!(a.par_chunks(2), b.par_chunks(2)).fold_with(
+                    AdditiveArray::default(),
+                    |mut coeffs, (a, b)| {
+                        coeffs[0] += a[0] * b[0];
+                        coeffs[1] += (a[1] - a[0]) * (b[1] - b[0]);
                         coeffs
-                    })
+                    },
+                )
             })
             .sum();
 

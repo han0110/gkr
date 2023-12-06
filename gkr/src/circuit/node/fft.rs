@@ -76,7 +76,7 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
 
         let (r_x, input_r_x, w_r_xs) = {
             let input = inputs[0].clone();
-            let w = ws.iter().map(|w| w.as_slice()).hada_sum();
+            let w = ws.par_iter().cloned().hada_sum();
             let polys = [input, w].map(MultilinearPoly::new);
             let (_, r_x, evals) = prove_sum_check(&Quadratic, claim.value, polys, transcript)?;
             let w_r_xs = ws.iter().map(|w| evaluate(w, &r_x)).collect_vec();
@@ -174,12 +174,13 @@ impl<F: PrimeField> FftNode<F> {
             let (claim, g) = self.wiring_sum_check_predicate(r_gs, &claims, layer, transcript);
             let polys = {
                 let eq_r_x = eq_poly(&r_x, F::ONE);
-                let omegas = Vec::from_iter(self.omegas.iter().copied().step_by(1 << layer));
+                let omegas =
+                    Vec::from_par_iter(self.omegas.par_iter().step_by(1 << layer).copied());
                 let w_interms = w_interms.iter().map(|w_interms| {
                     let w = w_interms.iter().nth_back(layer).unwrap();
                     chain![w, w].copied().collect_vec()
                 });
-                chain![[eq_r_x.into(), omegas].map(Into::into), w_interms].map(MultilinearPoly::new)
+                chain![[eq_r_x.into(), omegas], w_interms].map(MultilinearPoly::new)
             };
             let (_, r_x_prime, evals) = prove_sum_check(&g, claim, polys, transcript)?;
             let w_interm_r_x_primes = evals[2..].to_vec();

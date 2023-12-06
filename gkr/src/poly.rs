@@ -1,8 +1,8 @@
 use crate::util::{arithmetic::Field, izip, izip_eq, izip_par, Itertools};
 use rayon::prelude::*;
-use std::{borrow::Cow, mem, ops::Deref};
+use std::ops::Deref;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MultilinearPoly<F> {
     num_vars: usize,
     evals: Vec<F>,
@@ -30,10 +30,10 @@ impl<F: Clone> MultilinearPoly<F> {
 
 impl<F: Field> MultilinearPoly<F> {
     pub fn fix_var(&mut self, x_i: &F) {
-        let mut buf = vec![F::ZERO; self.evals.len() >> 1];
-        merge_into(&mut buf, &self.evals, x_i);
         self.num_vars -= 1;
-        self.evals = buf;
+        self.evals = izip_par!(self.evals.par_chunks(2))
+            .map(|eval| (eval[1] - eval[0]) * x_i + eval[0])
+            .collect();
     }
 }
 
@@ -54,27 +54,19 @@ impl<F> Deref for MultilinearPoly<F> {
 pub fn evaluate<F: Field>(evals: &[F], x: &[F]) -> F {
     assert_eq!(evals.len(), 1 << x.len());
 
-    let evals = &mut Cow::Borrowed(evals);
-    let buf = &mut Vec::with_capacity(evals.len() >> 1);
-    x.iter().for_each(|x_i| merge_in_place(evals, buf, x_i));
-    evals[0]
-}
-
-fn merge_in_place<F: Field>(evals: &mut Cow<[F]>, buf: &mut Vec<F>, x_i: &F) {
-    merge_into(buf, evals, x_i);
-    if let Cow::Owned(_) = evals {
-        mem::swap(evals.to_mut(), buf);
-    } else {
-        *evals = mem::replace(buf, Vec::with_capacity(buf.len() >> 1)).into();
+    if x.is_empty() {
+        return evals[0];
     }
-}
 
-fn merge_into<F: Field>(target: &mut Vec<F>, evals: &[F], x_i: &F) {
-    assert!(target.capacity() >= evals.len() >> 1);
-    target.resize(evals.len() >> 1, F::ZERO);
-
-    izip_par!(target, izip_par!(&evals[0..], &evals[1..]).step_by(2))
-        .for_each(|(target, (eval_0, eval_1))| *target = (*eval_1 - eval_0) * x_i + eval_0);
+    let x_last = x.last().unwrap();
+    let (lo, hi) = evals.split_at(evals.len() >> 1);
+    let mut buf = lo.to_vec();
+    izip_par!(&mut buf, hi).for_each(|(lo, hi)| *lo += (*hi - lo as &_) * x_last);
+    x.iter().enumerate().rev().skip(1).for_each(|(idx, x_i)| {
+        let (lo, hi) = buf.split_at_mut(1 << idx);
+        izip_par!(lo, &hi[..1 << idx]).for_each(|(lo, hi)| *lo += (*hi - lo as &_) * x_i)
+    });
+    buf[0]
 }
 
 pub struct PartialEqPoly<F> {

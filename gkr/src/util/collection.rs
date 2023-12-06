@@ -6,22 +6,22 @@ use std::{
     ops::{Add, AddAssign, Deref, DerefMut},
 };
 
-pub trait Hadamard<T>: Iterator {
+pub trait Hadamard<T> {
     fn hada_sum(self) -> Vec<T>;
 }
 
-impl<F, V, I> Hadamard<F> for I
+impl<F, I> Hadamard<F> for I
 where
     F: Field,
-    V: Into<Vec<F>> + AsRef<[F]>,
-    I: Iterator<Item = V>,
+    I: IntoParallelIterator<Item = Vec<F>>,
 {
-    fn hada_sum(mut self) -> Vec<F> {
-        let init = self.next().unwrap();
-        self.fold(init.into(), |mut acc, item| {
-            izip_par!(&mut acc, item.as_ref()).for_each(|(acc, item)| *acc += item);
-            acc
-        })
+    fn hada_sum(self) -> Vec<F> {
+        self.into_par_iter()
+            .reduce_with(|mut acc, item| {
+                izip_par!(&mut acc, item).for_each(|(acc, item)| *acc += item);
+                acc
+            })
+            .unwrap()
     }
 }
 
