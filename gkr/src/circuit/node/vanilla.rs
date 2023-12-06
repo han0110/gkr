@@ -495,12 +495,12 @@ pub mod test {
             },
             Circuit,
         },
-        test::run_gkr,
+        dev::run_gkr,
         util::{
             arithmetic::Field,
-            chain, izip,
-            test::{rand_bool, rand_range, rand_unique, rand_vec, seeded_std_rng},
-            Itertools, RngCore,
+            chain,
+            dev::{rand_bool, rand_range, rand_unique, rand_vec, seeded_std_rng},
+            izip, Itertools, RngCore,
         },
     };
     use halo2_curves::bn256::Fr;

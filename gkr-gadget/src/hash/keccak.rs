@@ -355,10 +355,10 @@ pub mod test {
         Keccak,
     };
     use gkr::{
-        test::run_gkr,
+        dev::run_gkr,
         util::{
             arithmetic::{try_felt_to_bool, Field, PrimeField},
-            test::{rand_bytes, rand_range, seeded_std_rng},
+            dev::{rand_bytes, rand_range, seeded_std_rng},
             RngCore,
         },
     };

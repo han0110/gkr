@@ -3,7 +3,7 @@ use crate::{
     poly::evaluate,
     prove_gkr,
     transcript::StdRngTranscript,
-    util::{arithmetic::PrimeField, izip_eq, test::rand_vec, Itertools, RngCore},
+    util::{arithmetic::PrimeField, dev::rand_vec, izip_eq, Itertools, RngCore},
     verify_gkr,
 };
 

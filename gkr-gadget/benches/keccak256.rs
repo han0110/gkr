@@ -6,7 +6,7 @@ use gkr::{
     transcript::StdRngTranscript,
     util::{
         arithmetic::PrimeField,
-        test::{rand_bytes, rand_vec, seeded_std_rng},
+        dev::{rand_bytes, rand_vec, seeded_std_rng},
     },
 };
 use gkr_gadget::hash::keccak::dev::{keccak_circuit, keccak_circuit_inputs};

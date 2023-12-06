@@ -6,7 +6,7 @@ pub mod arithmetic;
 pub mod collection;
 
 #[cfg(any(test, feature = "dev"))]
-pub mod test;
+pub mod dev;
 
 #[macro_export]
 macro_rules! chain_par {

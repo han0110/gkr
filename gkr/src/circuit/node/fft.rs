@@ -318,10 +318,10 @@ mod test {
             },
             Circuit,
         },
-        test::run_gkr,
+        dev::run_gkr,
         util::{
             arithmetic::{fft, PrimeField},
-            test::{rand_vec, seeded_std_rng},
+            dev::{rand_vec, seeded_std_rng},
             RngCore,
         },
     };

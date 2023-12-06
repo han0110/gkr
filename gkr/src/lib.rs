@@ -16,7 +16,7 @@ pub mod transcript;
 pub mod util;
 
 #[cfg(any(test, feature = "dev"))]
-pub mod test;
+pub mod dev;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
