@@ -69,6 +69,7 @@ pub fn evaluate<F: Field>(evals: &[F], x: &[F]) -> F {
     buf[0]
 }
 
+#[derive(Debug)]
 pub struct PartialEqPoly<F> {
     r_hi: Vec<F>,
     eq_r_lo: Vec<F>,

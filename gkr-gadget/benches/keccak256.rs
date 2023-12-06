@@ -11,7 +11,6 @@ use gkr::{
 };
 use gkr_gadget::hash::keccak::dev::{keccak_circuit, keccak_circuit_inputs};
 use halo2_curves::bn256::Fr;
-use pprof::criterion::{Output, PProfProfiler};
 
 fn run_gkr<F: PrimeField>(circuit: &Circuit<F>, values: &[Vec<F>], output_claims: &[EvalClaim<F>]) {
     let mut transcript = StdRngTranscript::<Vec<_>>::default();
@@ -46,9 +45,5 @@ fn keccak256(c: &mut Criterion) {
     }
 }
 
-criterion_group! {
-    name = bench;
-    config = Criterion::default().with_profiler(PProfProfiler::new(10, Output::Flamegraph(None)));
-    targets = keccak256
-}
+criterion_group!(bench, keccak256);
 criterion_main!(bench);
