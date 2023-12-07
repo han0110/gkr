@@ -302,21 +302,20 @@ impl WordIdx {
         self
     }
 
-    fn b_iter(self) -> impl Iterator<Item = usize> {
-        (self.idx * 64..(self.idx + 1) * 64)
+    fn w_iter(self) -> impl Iterator<Item = (usize, usize)> {
+        let bs = (self.idx * 64..(self.idx + 1) * 64)
             .cycle()
-            .skip(64 - self.rotate_left)
-            .take(64)
+            .skip(64 - self.rotate_left);
+        izip!(iter::repeat(self.input), bs).take(64)
     }
 }
 
 fn relay_gates<F: Field>(idx: WordIdx) -> impl Iterator<Item = VanillaGate<F>> {
-    izip!(idx.b_iter()).map(move |b| VanillaGate::relay((idx.input, b)))
+    izip!(idx.w_iter()).map(move |w| VanillaGate::relay(w))
 }
 
 fn xor_gates<F: Field>(lhs: WordIdx, rhs: WordIdx) -> impl Iterator<Item = VanillaGate<F>> {
-    izip!(lhs.b_iter(), rhs.b_iter())
-        .map(move |(b_0, b_1)| VanillaGate::xor((lhs.input, b_0), (rhs.input, b_1)))
+    izip!(lhs.w_iter(), rhs.w_iter()).map(move |(w_0, w_1)| VanillaGate::xor(w_0, w_1))
 }
 
 fn xor_with_rc_gates<F: Field>(
@@ -325,13 +324,12 @@ fn xor_with_rc_gates<F: Field>(
     rc: u64,
 ) -> impl Iterator<Item = VanillaGate<F>> {
     let bits = (0..64).map(move |idx| (rc >> idx) & 1 == 1);
-    izip!(lhs.b_iter(), rhs.b_iter(), bits).map(move |(b_0, b_1, bit)| {
-        let gate = if bit {
-            VanillaGate::xnor
+    izip!(lhs.w_iter(), rhs.w_iter(), bits).map(move |(w_0, w_1, bit)| {
+        if bit {
+            VanillaGate::xnor(w_0, w_1)
         } else {
-            VanillaGate::xor
-        };
-        gate((lhs.input, b_0), (rhs.input, b_1))
+            VanillaGate::xor(w_0, w_1)
+        }
     })
 }
 
@@ -339,12 +337,8 @@ fn not_lhs_and_rhs_gates<F: Field>(
     lhs: WordIdx,
     rhs: WordIdx,
 ) -> impl Iterator<Item = VanillaGate<F>> {
-    izip!(lhs.b_iter(), rhs.b_iter()).map(move |(b_0, b_1)| {
-        VanillaGate::new(
-            None,
-            vec![(None, (rhs.input, b_1))],
-            vec![(Some(-F::ONE), (lhs.input, b_0), (rhs.input, b_1))],
-        )
+    izip!(lhs.w_iter(), rhs.w_iter()).map(move |(w_0, w_1)| {
+        VanillaGate::new(None, vec![(None, w_1)], vec![(Some(-F::ONE), w_0, w_1)])
     })
 }
 
