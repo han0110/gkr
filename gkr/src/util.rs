@@ -4,6 +4,7 @@ pub use rand_core::{CryptoRng, RngCore, SeedableRng};
 
 pub mod arithmetic;
 pub mod collection;
+pub mod expression;
 
 #[cfg(any(test, feature = "dev"))]
 pub mod dev;

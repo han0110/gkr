@@ -15,15 +15,15 @@ pub mod quadratic;
 
 pub fn prove_sum_check<F: Field>(
     g: &impl SumCheckFunction<F>,
+    num_vars: usize,
     claim: F,
     polys: impl IntoIterator<Item = MultilinearPoly<F>>,
     transcript: &mut (impl TranscriptWrite<F> + ?Sized),
 ) -> Result<(F, Vec<F>, Vec<F>), Error> {
+    assert!(num_vars > 0);
+
     let mut polys = polys.into_iter().collect_vec();
     assert!(!polys.is_empty());
-
-    let num_vars = polys[0].num_vars();
-    assert!(num_vars > 0);
     assert!(!polys.iter().any(|poly| poly.num_vars() != num_vars));
 
     let degree = g.degree();
@@ -31,8 +31,8 @@ pub fn prove_sum_check<F: Field>(
 
     let mut claim = claim;
     let mut r = Vec::with_capacity(num_vars);
-    for _ in 0..num_vars {
-        let sum = g.compute_sum(claim, &polys);
+    for round in 0..num_vars {
+        let sum = g.compute_sum(round, claim, &polys);
         g.write_sum(&sum, transcript)?;
         assert_eq!(sum.len(), degree + 1);
 
@@ -49,8 +49,8 @@ pub fn prove_sum_check<F: Field>(
 
 pub fn verify_sum_check<F: Field>(
     g: &impl SumCheckFunction<F>,
-    claim: F,
     num_vars: usize,
+    claim: F,
     transcript: &mut (impl TranscriptRead<F> + ?Sized),
 ) -> Result<(F, Vec<F>), Error> {
     assert!(num_vars > 0);
@@ -80,7 +80,7 @@ pub fn err_unmatched_evaluation() -> Error {
 pub trait SumCheckFunction<F>: Debug {
     fn degree(&self) -> usize;
 
-    fn compute_sum(&self, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F>;
+    fn compute_sum(&self, round: usize, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F>;
 
     fn write_sum(
         &self,

@@ -15,7 +15,7 @@ impl<F: Field> SumCheckFunction<F> for Quadratic {
         2
     }
 
-    fn compute_sum(&self, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F> {
+    fn compute_sum(&self, _: usize, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F> {
         assert_eq!(polys.len() % 2, 0);
         let (a, b) = polys.split_at(polys.len() >> 1);
 

@@ -6,10 +6,7 @@ use crate::{
     circuit::node::{CombinedEvalClaim, EvalClaim, Node},
     poly::{eq_eval, eq_poly, evaluate, MultilinearPoly},
     sum_check::{
-        err_unmatched_evaluation,
-        generic::{Expression, Generic},
-        prove_sum_check,
-        quadratic::Quadratic,
+        err_unmatched_evaluation, generic::Generic, prove_sum_check, quadratic::Quadratic,
         verify_sum_check,
     },
     transcript::{Transcript, TranscriptRead, TranscriptWrite},
@@ -17,6 +14,7 @@ use crate::{
         arithmetic::{fft, inner_product, powers, squares, Field, PrimeField},
         chain, chain_par,
         collection::Hadamard,
+        expression::Expression,
         izip, izip_par, Itertools,
     },
     Error,
@@ -78,7 +76,8 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
             let input = inputs[0].clone();
             let w = ws.par_iter().cloned().hada_sum();
             let polys = [input, w].map(MultilinearPoly::new);
-            let (_, r_x, evals) = prove_sum_check(&Quadratic, claim.value, polys, transcript)?;
+            let (_, r_x, evals) =
+                prove_sum_check(&Quadratic, self.log2_size, claim.value, polys, transcript)?;
             let w_r_xs = ws.iter().map(|w| evaluate(w, &r_x)).collect_vec();
             transcript.write_felt(&evals[0])?;
             transcript.write_felts(&w_r_xs)?;
@@ -97,7 +96,7 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
     ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
         let (r_x, input_r_x, w_r_xs) = {
             let (sub_claim, r_x) =
-                verify_sum_check(&Quadratic, claim.value, self.log2_size, transcript)?;
+                verify_sum_check(&Quadratic, self.log2_size, claim.value, transcript)?;
             let input_r_x = transcript.read_felt()?;
             let w_r_xs = transcript.read_felts(claim.points.len())?;
             if sub_claim != self.final_eval(&claim, input_r_x, &w_r_xs) {
@@ -182,7 +181,7 @@ impl<F: PrimeField> FftNode<F> {
                 });
                 chain![[eq_r_x.into(), omegas], w_interms].map(MultilinearPoly::new)
             };
-            let (_, r_x_prime, evals) = prove_sum_check(&g, claim, polys, transcript)?;
+            let (_, r_x_prime, evals) = prove_sum_check(&g, r_x.len(), claim, polys, transcript)?;
             let w_interm_r_x_primes = evals[2..].to_vec();
             if layer == self.log2_size - 1 {
                 break;
@@ -209,7 +208,7 @@ impl<F: PrimeField> FftNode<F> {
         let mut r_x = r_x.to_vec();
         for layer in 0..self.log2_size {
             let (claim, g) = self.wiring_sum_check_predicate(r_gs, &claims, layer, transcript);
-            let (sub_claim, r_x_prime) = verify_sum_check(&g, claim, r_x.len(), transcript)?;
+            let (sub_claim, r_x_prime) = verify_sum_check(&g, r_x.len(), claim, transcript)?;
             let w_interm_r_x_primes = if layer == self.log2_size - 1 {
                 self.wiring_gkr_initial_evals(alphas)
             } else {
