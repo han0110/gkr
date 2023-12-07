@@ -1,4 +1,7 @@
-use crate::util::{arithmetic::Field, izip, izip_eq, izip_par, Itertools};
+use crate::{
+    chain_par,
+    util::{arithmetic::Field, izip_eq, izip_par, Itertools},
+};
 use rayon::prelude::*;
 use std::ops::Deref;
 
@@ -32,6 +35,7 @@ impl<F: Field> MultilinearPoly<F> {
     pub fn fix_var(&mut self, x_i: &F) {
         self.num_vars -= 1;
         self.evals = izip_par!(self.evals.par_chunks(2))
+            .with_min_len(64)
             .map(|eval| (eval[1] - eval[0]) * x_i + eval[0])
             .collect();
     }
@@ -108,14 +112,15 @@ pub fn eq_poly<F: Field>(y: &[F], scalar: F) -> MultilinearPoly<F> {
 pub fn eq_expand<F: Field>(poly: &[F], y: &[F]) -> Vec<F> {
     assert!(poly.len().is_power_of_two());
 
-    let mut buf = vec![F::ZERO; poly.len() << y.len()];
-    buf[..poly.len()].copy_from_slice(poly);
-    for (idx, y_i) in izip!(poly.len().ilog2().., y) {
-        let (lo, hi) = buf[..2 << idx].split_at_mut(1 << idx);
-        izip_par!(hi as &mut [_], lo as &[_]).for_each(|(hi, lo)| *hi = *lo * y_i);
-        izip_par!(lo as &mut [_], hi as &[_]).for_each(|(lo, hi)| *lo -= hi);
-    }
-    buf
+    y.iter().fold(poly.to_vec(), |poly, y_i| {
+        let one_minus_y_i = F::ONE - y_i;
+        chain_par![
+            poly.par_iter().map(|eval| *eval * one_minus_y_i),
+            poly.par_iter().map(|eval| *eval * y_i),
+        ]
+        .with_min_len(64)
+        .collect()
+    })
 }
 
 pub fn eq_eval<'a, F: Field>(rs: impl IntoIterator<Item = &'a [F]>) -> F {
