@@ -91,7 +91,7 @@ impl<T> DirectedAcyclicGraph<T> {
         NodeId(id)
     }
 
-    pub(super) fn link(&mut self, from: NodeId, to: NodeId) {
+    pub(super) fn connect(&mut self, from: NodeId, to: NodeId) {
         let NodeId(from) = from;
         let NodeId(to) = to;
         assert_ne!(from, to);

@@ -27,13 +27,13 @@ impl<F: Field> Circuit<F> {
         self.dag.insert(node)
     }
 
-    pub fn link(&mut self, from: NodeId, to: NodeId) {
+    pub fn connect(&mut self, from: NodeId, to: NodeId) {
         assert_eq!(
             self.nodes()[from.0].log2_output_size(),
             self.nodes()[to.0].log2_input_size()
         );
         assert!(!self.nodes()[to.0].is_input());
-        self.dag.link(from, to);
+        self.dag.connect(from, to);
         self.topo = self.dag.topo();
     }
 
@@ -62,3 +62,15 @@ impl<F> Deref for Circuit<F> {
         &self.dag
     }
 }
+
+#[macro_export]
+macro_rules! connect {
+    ($circuit:ident { $($to:ident <- $($from:ident),*);*$(;)? }) => {
+        $($($circuit.connect($from, $to);)*)*
+    };
+    ($circuit:ident { $($($from:ident),* -> $to:ident);*$(;)? }) => {
+        $($($circuit.connect($from, $to);)*)*
+    };
+}
+
+pub use connect;

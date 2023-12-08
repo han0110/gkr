@@ -169,7 +169,9 @@ impl<F: Field> VanillaNode<F> {
             })
             .unique()
             .fold(Vec::new(), |mut inputs, (phase, i)| {
-                inputs.resize_with(phase + 1, BTreeSet::new);
+                if inputs.len() < phase + 1 {
+                    inputs.resize_with(phase + 1, BTreeSet::new);
+                }
                 inputs[phase].insert(i);
                 inputs
             });
@@ -765,7 +767,7 @@ pub mod test {
             izip!(1.., &nodes[1..], &input_arities).for_each(|(idx, to, input_arity)| {
                 rand_unique(*input_arity, |rng| rand_range(0..idx, rng), &mut rng)
                     .into_iter()
-                    .for_each(|from| circuit.link(nodes[from], *to))
+                    .for_each(|from| circuit.connect(nodes[from], *to))
             });
             assert_eq!(
                 circuit.indegs().skip(1).collect_vec(),

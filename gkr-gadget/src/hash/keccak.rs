@@ -1,5 +1,6 @@
 use gkr::{
     circuit::{
+        connect,
         node::{InputNode, Node, VanillaGate, VanillaNode},
         Circuit, NodeId,
     },
@@ -64,8 +65,7 @@ impl Keccak {
 
         let state_prime = circuit.insert(state_prime);
 
-        circuit.link(state, state_prime);
-        circuit.link(input, state_prime);
+        connect!(circuit { state_prime <- state, input });
 
         self.perm.configure(circuit, state_prime)
     }
@@ -137,16 +137,7 @@ impl KeccakPerm {
                 .collect();
             VanillaNode::new(1, n_1.log2_sub_output_size(), gates, self.num_reps)
         };
-        let n_3_0 = {
-            let gates = [(0, 2), (1, 3), (2, 4), (3, 0), (4, 1)]
-                .into_iter()
-                .flat_map(|(lhs, rhs)| {
-                    xor_gates(WordIdx::new(lhs), WordIdx::new(rhs).rotate_left(1))
-                })
-                .collect();
-            VanillaNode::new(1, n_2.log2_sub_output_size(), gates, self.num_reps)
-        };
-        let n_3_1 = {
+        let n_3 = {
             let gates = [(20, 22), (21, 23), (22, 24), (23, 20), (24, 21)]
                 .into_iter()
                 .flat_map(|(lhs, rhs)| {
@@ -156,6 +147,15 @@ impl KeccakPerm {
             VanillaNode::new(1, Self::LOG2_STATE_SIZE, gates, self.num_reps)
         };
         let n_4 = {
+            let gates = [(0, 2), (1, 3), (2, 4), (3, 0), (4, 1)]
+                .into_iter()
+                .flat_map(|(lhs, rhs)| {
+                    xor_gates(WordIdx::new(lhs), WordIdx::new(rhs).rotate_left(1))
+                })
+                .collect();
+            VanillaNode::new(1, n_2.log2_sub_output_size(), gates, self.num_reps)
+        };
+        let n_5 = {
             let gates = chain![
                 [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)]
                     .into_iter()
@@ -167,28 +167,28 @@ impl KeccakPerm {
             ]
             .take(1 << Self::LOG2_STATE_SIZE)
             .collect();
-            VanillaNode::new(2, n_3_0.log2_sub_output_size(), gates, self.num_reps)
+            VanillaNode::new(2, n_3.log2_sub_output_size(), gates, self.num_reps)
         };
-        let n_5 = {
+        let n_6 = {
             let gates = izip!(0..25, iter::repeat([4, 0, 1, 2, 3]).flatten())
                 .flat_map(|(lhs, rhs)| xor_gates(WordIdx::new(lhs), WordIdx::new(rhs).input(1)))
                 .collect();
             VanillaNode::new(2, Self::LOG2_STATE_SIZE, gates, self.num_reps)
         };
 
-        let [n_1, n_2, n_3_0, n_3_1, n_4, n_5] =
-            [n_1, n_2, n_3_0, n_3_1, n_4, n_5].map(|node| circuit.insert(node.into_boxed()));
+        let [n_1, n_2, n_3, n_4, n_5, n_6] =
+            [n_1, n_2, n_3, n_4, n_5, n_6].map(|node| circuit.insert(node.into_boxed()));
 
-        circuit.link(state, n_1);
-        circuit.link(n_1, n_2);
-        circuit.link(n_2, n_3_0);
-        circuit.link(state, n_3_1);
-        circuit.link(n_3_0, n_4);
-        circuit.link(n_3_1, n_4);
-        circuit.link(state, n_5);
-        circuit.link(n_4, n_5);
+        connect!(circuit {
+            n_1 <- state;
+            n_2 <- n_1;
+            n_3 <- state;
+            n_4 <- n_2;
+            n_5 <- n_3, n_4;
+            n_6 <- state, n_5;
+        });
 
-        n_5
+        n_6
     }
 
     fn configure_rho_pi_chi_iota<F: Field>(
@@ -225,7 +225,7 @@ impl KeccakPerm {
             (21, 2),
         ]
         .map(|(idx, rotate_left)| WordIdx::new(idx).rotate_left(rotate_left));
-        let n_6 = {
+        let n_7 = {
             let gates = [
                 (1, 2),
                 (2, 3),
@@ -258,7 +258,7 @@ impl KeccakPerm {
             .collect();
             VanillaNode::new(1, Self::LOG2_STATE_SIZE, gates, self.num_reps)
         };
-        let n_7 = {
+        let n_8 = {
             let gates = chain![
                 xor_with_rc_gates(words[0], WordIdx::new(0).input(1), rc),
                 (1..25).flat_map(|idx| xor_gates(words[idx], WordIdx::new(idx).input(1)))
@@ -267,13 +267,14 @@ impl KeccakPerm {
             VanillaNode::new(2, Self::LOG2_STATE_SIZE, gates, self.num_reps)
         };
 
-        let [n_6, n_7] = [n_6, n_7].map(|node| circuit.insert(node.into_boxed()));
+        let [n_7, n_8] = [n_7, n_8].map(|node| circuit.insert(node));
 
-        circuit.link(state, n_6);
-        circuit.link(state, n_7);
-        circuit.link(n_6, n_7);
+        connect!(circuit {
+            n_7 <- state;
+            n_8 <- state, n_7;
+        });
 
-        n_7
+        n_8
     }
 }
 
