@@ -51,6 +51,48 @@ pub trait Node<F>: Debug {
     ) -> Result<Vec<Vec<EvalClaim<F>>>, Error>;
 }
 
+impl<F> Node<F> for Box<dyn Node<F>> {
+    fn into_boxed(self) -> Box<dyn Node<F>>
+    where
+        Self: 'static + Sized,
+    {
+        self
+    }
+
+    fn is_input(&self) -> bool {
+        (**self).is_input()
+    }
+
+    fn log2_input_size(&self) -> usize {
+        (**self).log2_input_size()
+    }
+
+    fn log2_output_size(&self) -> usize {
+        (**self).log2_output_size()
+    }
+
+    fn evaluate(&self, inputs: Vec<&Vec<F>>) -> Vec<F> {
+        (**self).evaluate(inputs)
+    }
+
+    fn prove_claim_reduction(
+        &self,
+        claim: CombinedEvalClaim<F>,
+        inputs: Vec<&Vec<F>>,
+        transcript: &mut dyn TranscriptWrite<F>,
+    ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
+        (**self).prove_claim_reduction(claim, inputs, transcript)
+    }
+
+    fn verify_claim_reduction(
+        &self,
+        claim: CombinedEvalClaim<F>,
+        transcript: &mut dyn TranscriptRead<F>,
+    ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
+        (**self).verify_claim_reduction(claim, transcript)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct EvalClaim<F> {
     point: Vec<F>,

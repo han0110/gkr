@@ -1,0 +1,27 @@
+[package]
+name = "gkr-gadget"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gkr = { path = "../gkr" }
+halo2_curves = { workspace = true }
+rayon = { workspace = true }
+itertools = { workspace = true }
+rand_core = { workspace = true }
+rand_chacha = { workspace = true }
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+
+[dev-dependencies]
+gkr = { path = "../gkr", features = ["dev"] }
+criterion = { workspace = true }
+
+[features]
+default = []
+dev = ["gkr/dev"]
+sanity-check = ["gkr/sanity-check"]
+
+[[bench]]
+name = "keccak256"
+harness = false
+required-features = ["dev"]

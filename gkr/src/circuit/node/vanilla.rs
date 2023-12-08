@@ -9,7 +9,8 @@ use crate::{
         arithmetic::{inner_product, Field},
         chain,
         collection::{AdditiveVec, Hadamard},
-        izip, izip_eq, izip_par, Itertools,
+        expression::Expression,
+        izip, izip_par, Itertools,
     },
     Error,
 };
@@ -17,6 +18,7 @@ use rayon::prelude::*;
 use std::{
     collections::{BTreeSet, HashMap},
     iter,
+    slice::from_ref,
 };
 
 #[derive(Clone, Debug)]
@@ -26,7 +28,8 @@ pub struct VanillaNode<F> {
     log2_sub_output_size: usize,
     log2_reps: usize,
     gates: Vec<VanillaGate<F>>,
-    input_indices: Vec<BTreeSet<usize>>,
+    inputs: Vec<BTreeSet<usize>>,
+    wirings: Vec<Vec<WiringExpression<F>>>,
 }
 
 impl<F: Field> Node<F> for VanillaNode<F> {
@@ -52,11 +55,11 @@ impl<F: Field> Node<F> for VanillaNode<F> {
                 let b_x = (b_g >> self.log2_sub_output_size) << self.log2_sub_input_size;
                 let gate = &self.gates[b_g % self.gates.len()];
                 chain![
-                    gate.w_0,
-                    gate.w_1
+                    gate.d_0,
+                    gate.d_1
                         .iter()
                         .map(|(s, (i_0, b_0))| maybe_mul!(s, inputs[*i_0][b_x + b_0])),
-                    gate.w_2.iter().map(|(s, (i_0, b_0), (i_1, b_1))| {
+                    gate.d_2.iter().map(|(s, (i_0, b_0), (i_1, b_1))| {
                         maybe_mul!(s, inputs[*i_0][b_x + b_0] * inputs[*i_1][b_x + b_1])
                     }),
                 ]
@@ -80,19 +83,19 @@ impl<F: Field> Node<F> for VanillaNode<F> {
         let mut r_xs = Vec::new();
         let mut eq_r_xs = Vec::new();
         let mut input_r_xs = Vec::new();
-        for (phase, indices) in izip!(0.., &self.input_indices) {
+        for (phase, indices) in izip!(0.., &self.inputs) {
             let polys = self.sum_check_polys(&inputs, &eq_r_g_prime, &eq_r_xs, &input_r_xs);
             let (subclaim, r_x_i, evals) = {
                 let claim = claim - self.sum_check_eval(&eq_r_gs, &eq_r_xs, &input_r_xs);
-                prove_sum_check(&Quadratic, claim, polys, transcript)?
+                prove_sum_check(&Quadratic, self.log2_input_size(), claim, polys, transcript)?
             };
-            let input_r_x_is = evals.into_iter().skip(1).step_by(2).collect_vec();
+            let input_r_x_is = evals.into_iter().skip(indices.len()).collect_vec();
             transcript.write_felts(&input_r_x_is)?;
 
             claim = subclaim;
             r_xs.push(r_x_i);
-            input_r_xs.push((izip!(indices.iter().cloned(), input_r_x_is)).collect());
-            if phase == self.input_indices.len() - 1 {
+            input_r_xs.push((izip!(indices.clone(), input_r_x_is)).collect());
+            if phase == self.inputs.len() - 1 {
                 break;
             }
             eq_r_xs.push(self.eq_r_x(&r_xs[phase], &input_r_xs[phase]));
@@ -112,10 +115,10 @@ impl<F: Field> Node<F> for VanillaNode<F> {
         let mut r_xs = Vec::new();
         let mut eq_r_xs = Vec::new();
         let mut input_r_xs = Vec::new();
-        for (phase, indices) in izip!(0.., &self.input_indices) {
+        for (phase, indices) in izip!(0.., &self.inputs) {
             let (subclaim, r_x_i) = {
                 let claim = claim - self.sum_check_eval(&eq_r_gs, &eq_r_xs, &input_r_xs);
-                verify_sum_check(&Quadratic, claim, self.log2_input_size(), transcript)?
+                verify_sum_check(&Quadratic, self.log2_input_size(), claim, transcript)?
             };
             let input_r_x_is = transcript.read_felts(indices.len())?;
 
@@ -142,8 +145,8 @@ impl<F: Field> VanillaNode<F> {
         assert!(!gates.is_empty());
         let inputs = Vec::from_iter(gates.iter().flat_map(|gate| {
             chain![
-                gate.w_1.iter().map(|w| w.1),
-                gate.w_2.iter().flat_map(|w| [w.1, w.2])
+                gate.d_1.iter().map(|w| w.1),
+                gate.d_2.iter().flat_map(|w| [w.1, w.2])
             ]
         }));
         assert!(!inputs.iter().any(|(_, b)| *b >= 1 << log2_sub_input_size));
@@ -156,20 +159,21 @@ impl<F: Field> VanillaNode<F> {
             .collect_vec();
         let log2_reps = num_reps.next_power_of_two().ilog2() as usize;
 
-        let input_indices = gates
+        let inputs = gates
             .iter()
             .flat_map(|gate| {
                 chain![
-                    gate.w_1.iter().map(|w| (0, w.1 .0)),
-                    gate.w_2.iter().flat_map(|w| [(0, w.1 .0), (1, w.2 .0)])
+                    gate.d_1.iter().map(|w| (0, w.1 .0)),
+                    gate.d_2.iter().flat_map(|w| [(0, w.1 .0), (1, w.2 .0)])
                 ]
             })
             .unique()
-            .fold(Vec::new(), |mut indices, (phase, i)| {
-                indices.resize_with(phase + 1, BTreeSet::new);
-                indices[phase].insert(i);
-                indices
+            .fold(Vec::new(), |mut inputs, (phase, i)| {
+                inputs.resize_with(phase + 1, BTreeSet::new);
+                inputs[phase].insert(i);
+                inputs
             });
+        let wirings = wiring_expressions(input_arity, log2_sub_input_size, &gates, &inputs);
 
         Self {
             input_arity,
@@ -177,22 +181,43 @@ impl<F: Field> VanillaNode<F> {
             log2_sub_output_size,
             log2_reps,
             gates,
-            input_indices,
+            wirings,
+            inputs,
         }
+    }
+
+    pub fn log2_sub_input_size(&self) -> usize {
+        self.log2_sub_input_size
+    }
+
+    fn sub_input_size(&self) -> usize {
+        1 << self.log2_sub_input_size
+    }
+
+    pub fn log2_sub_output_size(&self) -> usize {
+        self.log2_sub_output_size
+    }
+
+    fn sub_output_size(&self) -> usize {
+        1 << self.log2_sub_output_size
     }
 
     pub fn log2_reps(&self) -> usize {
         self.log2_reps
     }
 
+    fn num_reps(&self) -> usize {
+        1 << self.log2_reps
+    }
+
     fn eq_r_gs(&self, r_gs: &[Vec<F>], alphas: &[F]) -> Vec<PartialEqPoly<F>> {
-        izip!(r_gs, alphas)
+        izip_par!(r_gs, alphas)
             .map(|(r_g, alpha)| PartialEqPoly::new(r_g, self.log2_sub_output_size, *alpha))
             .collect()
     }
 
     fn eq_r_g_prime(&self, eq_r_gs: &[PartialEqPoly<F>]) -> Vec<F> {
-        eq_r_gs.iter().map(PartialEqPoly::expand).hada_sum()
+        eq_r_gs.par_iter().map(PartialEqPoly::expand).hada_sum()
     }
 
     fn eq_r_x(&self, r_x: &[F], input_r_xs: &HashMap<usize, F>) -> PartialEqPoly<F> {
@@ -217,25 +242,18 @@ impl<F: Field> VanillaNode<F> {
             1 => self.phase_1_wiring(eq_r_g_prime, eq_r_xs, input_r_xs),
             _ => unreachable!(),
         };
-        let inputs = self.input_indices[phase]
+        let inputs = self.inputs[phase]
             .iter()
             .map(|input| MultilinearPoly::new(inputs[*input].clone()));
-        Vec::from_iter(izip_eq!(wirings, inputs).flat_map(|(wiring, input)| [wiring, input]))
+        chain![wirings, inputs].collect()
     }
 
     fn phase_0_wiring(&self, inputs: &[&Vec<F>], eq_r_g_prime: &[F]) -> Vec<MultilinearPoly<F>> {
-        self.inner_wiring(0, &|b_g, b_x, gate| {
-            chain![
-                gate.w_1.iter().map(move |(s, (i_0, b_0))| {
-                    let value = maybe_mul!(s, eq_r_g_prime[b_g]);
-                    (*i_0, b_x + b_0, value)
-                }),
-                gate.w_2.iter().map(move |(s, (i_0, b_0), (i_1, b_1))| {
-                    let value = maybe_mul!(s, eq_r_g_prime[b_g] * inputs[*i_1][b_x + b_1]);
-                    (*i_0, b_x + b_0, value)
-                }),
-            ]
-        })
+        let inputs = inputs
+            .iter()
+            .map(|input| input.chunks(self.sub_input_size()).collect());
+        let eqs = [eq_r_g_prime.chunks(self.sub_output_size()).collect()];
+        self.inner_wiring(0, chain![inputs, eqs].collect())
     }
 
     fn phase_1_wiring(
@@ -244,44 +262,41 @@ impl<F: Field> VanillaNode<F> {
         eq_r_xs: &[PartialEqPoly<F>],
         input_r_xs: &[HashMap<usize, F>],
     ) -> Vec<MultilinearPoly<F>> {
-        let eq_r_x_0 = &eq_r_xs[0].expand();
-        self.inner_wiring(1, &|b_g, b_x, gate| {
-            gate.w_2.iter().map(move |(s, (i_0, b_0), (i_1, b_1))| {
-                let common = eq_r_g_prime[b_g] * eq_r_x_0[b_x + b_0];
-                let value = if self.input_arity == 1 {
-                    maybe_mul!(s, common)
-                } else {
-                    maybe_mul!(s, common * input_r_xs[0][i_0])
-                };
-                (*i_1, b_x + b_1, value)
-            })
-        })
+        let inputs = self.inputs[0]
+            .iter()
+            .map(|i| vec![from_ref(&input_r_xs[0][i]); self.num_reps()]);
+        let eq_r_x_0 = eq_r_xs[0].expand();
+        let eqs = [
+            eq_r_g_prime.chunks(self.sub_output_size()).collect(),
+            eq_r_x_0.chunks(self.sub_input_size()).collect(),
+        ];
+        self.inner_wiring(1, chain![inputs, eqs].collect())
     }
 
-    fn inner_wiring<'a, T, I>(&'a self, phase: usize, f: &'a T) -> Vec<MultilinearPoly<F>>
-    where
-        T: (Fn(usize, usize, &'a VanillaGate<F>) -> I) + Send + Sync,
-        I: Iterator<Item = (usize, usize, F)>,
-    {
-        let buf = (0..self.output_size())
-            .into_par_iter()
-            .fold_with(vec![HashMap::new(); self.input_arity], |mut buf, b_g| {
-                let b_x = (b_g >> self.log2_sub_output_size) << self.log2_sub_input_size;
-                let gate = &self.gates[b_g % self.gates.len()];
-                f(b_g, b_x, gate).for_each(|(i, b, v)| add_or_insert!(buf[i], b, v));
-                buf
-            })
-            .reduce_with(|mut acc, item| {
-                izip!(&mut acc, item).for_each(|(acc, item)| {
-                    item.iter().for_each(|(b, v)| add_or_insert!(acc, *b, *v))
-                });
-                acc
-            })
-            .unwrap();
-        let buf = Vec::from_iter(self.input_indices[phase].iter().map(|idx| &buf[*idx]));
-        let mut wirings = vec![vec![F::ZERO; self.input_size()]; buf.len()];
-        izip_par!(&mut wirings, buf).for_each(|(w, buf)| buf.iter().for_each(|(b, v)| w[*b] += v));
-        wirings.into_iter().map(MultilinearPoly::new).collect()
+    fn inner_wiring(&self, phase: usize, data: Vec<Vec<&[F]>>) -> Vec<MultilinearPoly<F>> {
+        let evaluate = |expr: &Expression<F, Wire>, rep: usize| {
+            expr.evaluate(
+                &|constant| constant,
+                &|(idx, b)| data[idx][rep][b],
+                &|value| -value,
+                &|lhs, rhs| lhs + rhs,
+                &|lhs, rhs| lhs * rhs,
+            )
+        };
+        let wiring = |exprs: &Vec<Vec<_>>| {
+            Vec::from_par_iter((0..self.num_reps()).into_par_iter().flat_map(|rep| {
+                let evaluate = move |expr| evaluate(expr, rep);
+                exprs
+                    .par_iter()
+                    .with_min_len(64)
+                    .map(move |exprs| exprs.par_iter().with_min_len(64).map(evaluate).sum())
+            }))
+        };
+        self.wirings[phase]
+            .par_iter()
+            .map(wiring)
+            .map(MultilinearPoly::new)
+            .collect()
     }
 
     fn sum_check_eval(
@@ -301,8 +316,8 @@ impl<F: Field> VanillaNode<F> {
 
     fn phase_0_eval(&self, eq_r_gs: &[PartialEqPoly<F>]) -> F {
         izip_par!(0..self.gates.len(), &self.gates)
-            .filter(|(_, gate)| gate.w_0.is_some())
-            .map(|(b_g, gate)| gate.w_0.unwrap() * F::sum(eq_r_gs.iter().map(|eq_r_g| eq_r_g[b_g])))
+            .filter(|(_, gate)| gate.d_0.is_some())
+            .map(|(b_g, gate)| gate.d_0.unwrap() * F::sum(eq_r_gs.iter().map(|eq_r_g| eq_r_g[b_g])))
             .sum::<F>()
     }
 
@@ -313,7 +328,7 @@ impl<F: Field> VanillaNode<F> {
         input_r_xs: &[HashMap<usize, F>],
     ) -> F {
         self.inner_eval(eq_r_gs, eq_r_xs, &|gate| {
-            F::sum(gate.w_1.iter().map(|(s, (i_0, b_0))| {
+            F::sum(gate.d_1.iter().map(|(s, (i_0, b_0))| {
                 if self.input_arity == 1 {
                     maybe_mul!(s, eq_r_xs[0][*b_0])
                 } else {
@@ -330,7 +345,7 @@ impl<F: Field> VanillaNode<F> {
         input_r_xs: &[HashMap<usize, F>],
     ) -> F {
         self.inner_eval(eq_r_gs, eq_r_xs, &|gate| {
-            F::sum(gate.w_2.iter().map(|(s, (i_0, b_0), (i_1, b_1))| {
+            F::sum(gate.d_2.iter().map(|(s, (i_0, b_0), (i_1, b_1))| {
                 let common = eq_r_xs[0][*b_0] * eq_r_xs[1][*b_1];
                 if self.input_arity == 1 {
                     maybe_mul!(s, common)
@@ -367,9 +382,9 @@ impl<F: Field> VanillaNode<F> {
     ) -> Vec<Vec<EvalClaim<F>>> {
         (0..self.input_arity)
             .map(|input| {
-                izip!(&self.input_indices, r_xs, input_r_xs)
-                    .filter(|(inputs, _, _)| inputs.contains(&input))
-                    .map(|(_, r_x_i, input_r_x_is)| {
+                izip!(r_xs, input_r_xs)
+                    .filter(|(_, input_r_xs)| input_r_xs.contains_key(&input))
+                    .map(|(r_x_i, input_r_x_is)| {
                         EvalClaim::new(r_x_i.clone(), input_r_x_is[&input])
                     })
                     .collect()
@@ -378,82 +393,146 @@ impl<F: Field> VanillaNode<F> {
     }
 }
 
-pub type Input = (usize, usize);
+type WiringExpression<F> = Vec<Vec<Expression<F, Wire>>>;
+
+fn wiring_expressions<F: Field>(
+    input_arity: usize,
+    log2_sub_input_size: usize,
+    gates: &[VanillaGate<F>],
+    inputs: &[BTreeSet<usize>],
+) -> Vec<Vec<WiringExpression<F>>> {
+    let sub_input_size = 1 << log2_sub_input_size;
+    let input_idx = inputs
+        .iter()
+        .map(|indices| HashMap::<_, _>::from_iter(izip!(0.., indices).map(|(idx, i)| (*i, idx))))
+        .collect_vec();
+    let process = |phase: usize| {
+        let mut wirings = vec![vec![Vec::new(); sub_input_size]; inputs[phase].len()];
+        let mut push = |i, b: &usize, expr| wirings[input_idx[phase][i]][*b].push(expr);
+        let eq_offset = match phase {
+            0 => input_arity,
+            1 => input_idx[0].len(),
+            _ => unreachable!(),
+        };
+        match phase {
+            0 => izip!(0.., gates).for_each(|(b_g, gate)| {
+                let eq_r_g_prime = &Expression::Data((eq_offset, b_g));
+                gate.d_1.iter().for_each(|(s, (i_0, b_0))| {
+                    push(i_0, b_0, maybe_mul_expr!(s, eq_r_g_prime));
+                });
+                gate.d_2.iter().for_each(|(s, (i_0, b_0), (i_1, b_1))| {
+                    let input = Expression::Data((*i_1, *b_1));
+                    push(i_0, b_0, maybe_mul_expr!(s, eq_r_g_prime) * input);
+                });
+            }),
+            1 => izip!(0.., gates).for_each(|(b_g, gate)| {
+                let eq_r_g_prime = &Expression::Data((eq_offset, b_g));
+                gate.d_2.iter().for_each(|(s, (i_0, b_0), (i_1, b_1))| {
+                    let eq_r_x_0 = &Expression::Data((eq_offset + 1, *b_0));
+                    let comm = maybe_mul_expr!(s, eq_r_g_prime * eq_r_x_0);
+                    if input_arity == 1 {
+                        push(i_1, b_1, comm);
+                    } else {
+                        push(i_1, b_1, comm * Expression::Data((input_idx[0][i_0], 0)));
+                    };
+                });
+            }),
+            _ => unreachable!(),
+        }
+        wirings
+    };
+    (0..inputs.len()).map(process).collect()
+}
+
+pub type Wire = (usize, usize);
 
 #[derive(Clone, Debug)]
 pub struct VanillaGate<F> {
-    w_0: Option<F>,
-    w_1: Vec<(Option<F>, Input)>,
-    w_2: Vec<(Option<F>, Input, Input)>,
+    d_0: Option<F>,
+    d_1: Vec<(Option<F>, Wire)>,
+    d_2: Vec<(Option<F>, Wire, Wire)>,
 }
 
 impl<F> Default for VanillaGate<F> {
     fn default() -> Self {
         Self {
-            w_0: None,
-            w_1: Vec::new(),
-            w_2: Vec::new(),
+            d_0: None,
+            d_1: Vec::new(),
+            d_2: Vec::new(),
         }
     }
 }
 
 impl<F> VanillaGate<F> {
     pub fn new(
-        w_0: Option<F>,
-        w_1: Vec<(Option<F>, Input)>,
-        w_2: Vec<(Option<F>, Input, Input)>,
+        d_0: Option<F>,
+        d_1: Vec<(Option<F>, Wire)>,
+        d_2: Vec<(Option<F>, Wire, Wire)>,
     ) -> Self {
-        Self { w_0, w_1, w_2 }
+        Self { d_0, d_1, d_2 }
     }
 
     pub fn constant(constant: F) -> Self {
-        Self {
-            w_0: Some(constant),
-            ..Default::default()
-        }
+        Self::new(Some(constant), Vec::new(), Vec::new())
     }
 
-    pub fn add(b_0: Input, b_1: Input) -> Self {
-        Self {
-            w_1: vec![(None, b_0), (None, b_1)],
-            ..Default::default()
-        }
+    pub fn relay(w: Wire) -> Self {
+        Self::new(None, vec![(None, w)], Vec::new())
     }
 
-    pub fn sub(b_0: Input, b_1: Input) -> Self
+    pub fn add(w_0: Wire, w_1: Wire) -> Self {
+        Self::new(None, vec![(None, w_0), (None, w_1)], Vec::new())
+    }
+
+    pub fn sub(w_0: Wire, w_1: Wire) -> Self
     where
         F: Field,
     {
-        Self {
-            w_1: vec![(None, b_0), (Some(-F::ONE), b_1)],
-            ..Default::default()
-        }
+        Self::new(None, vec![(None, w_0), (Some(-F::ONE), w_1)], Vec::new())
     }
 
-    pub fn mul(b_0: Input, b_1: Input) -> Self {
-        Self {
-            w_2: vec![(None, b_0, b_1)],
-            ..Default::default()
-        }
+    pub fn mul(w_0: Wire, w_1: Wire) -> Self {
+        Self::new(None, Vec::new(), vec![(None, w_0, w_1)])
     }
 
-    pub fn sum(bs: impl IntoIterator<Item = Input>) -> Self {
-        Self {
-            w_1: bs.into_iter().map(|b| (None, b)).collect(),
-            ..Default::default()
-        }
+    pub fn sum(bs: impl IntoIterator<Item = Wire>) -> Self {
+        let w_1 = bs.into_iter().map(|b| (None, b)).collect();
+        Self::new(None, w_1, Vec::new())
     }
 
-    pub fn w_0(&self) -> &Option<F> {
-        &self.w_0
+    pub fn and(w_0: Wire, w_1: Wire) -> Self {
+        Self::mul(w_0, w_1)
     }
 
-    pub fn w_1(&self) -> &[(Option<F>, Input)] {
-        &self.w_1
+    pub fn xor(w_0: Wire, w_1: Wire) -> Self
+    where
+        F: Field,
+    {
+        let d_1 = vec![(None, w_0), (None, w_1)];
+        let d_2 = vec![(Some(-F::ONE.double()), w_0, w_1)];
+        Self::new(None, d_1, d_2)
     }
 
-    pub fn w_2(&self) -> &[(Option<F>, Input, Input)] {
-        &self.w_2
+    pub fn xnor(w_0: Wire, w_1: Wire) -> Self
+    where
+        F: Field,
+    {
+        let d_0 = Some(F::ONE);
+        let d_1 = vec![(Some(-F::ONE), w_0), (Some(-F::ONE), w_1)];
+        let d_2 = vec![(Some(F::ONE.double()), w_0, w_1)];
+        Self::new(d_0, d_1, d_2)
+    }
+
+    pub fn d_0(&self) -> &Option<F> {
+        &self.d_0
+    }
+
+    pub fn d_1(&self) -> &[(Option<F>, Wire)] {
+        &self.d_1
+    }
+
+    pub fn d_2(&self) -> &[(Option<F>, Wire, Wire)] {
+        &self.d_2
     }
 }
 
@@ -463,21 +542,28 @@ macro_rules! maybe_mul {
     };
 }
 
-macro_rules! add_or_insert {
-    ($map:expr, $key:expr, $value:expr) => {{
-        $map.entry($key)
-            .and_modify(|acc| *acc += $value)
-            .or_insert_with(|| $value);
-    }};
+macro_rules! maybe_mul_expr {
+    ($s:expr, $item:expr) => {
+        $s.map(|s| {
+            assert_ne!(s, F::ZERO);
+            if s == F::ONE {
+                $item.clone()
+            } else if s == -F::ONE {
+                -$item
+            } else {
+                $item * Expression::Constant(s)
+            }
+        })
+        .unwrap_or_else(|| $item.clone())
+    };
 }
 
-use {add_or_insert, maybe_mul};
+use {maybe_mul, maybe_mul_expr};
 
 #[cfg(test)]
 pub mod test {
     use crate::{
         circuit::{
-            dag::DirectedAcyclicGraph,
             node::{
                 input::InputNode,
                 vanilla::{VanillaGate, VanillaNode},
@@ -485,12 +571,12 @@ pub mod test {
             },
             Circuit,
         },
-        test::run_gkr,
+        dev::run_gkr,
         util::{
             arithmetic::Field,
-            chain, izip,
-            test::{rand_bool, rand_range, rand_unique, rand_vec, seeded_std_rng},
-            Itertools, RngCore,
+            chain,
+            dev::{rand_bool, rand_range, rand_unique, rand_vec, seeded_std_rng},
+            izip, Itertools, RngCore,
         },
     };
     use halo2_curves::bn256::Fr;
@@ -523,10 +609,10 @@ pub mod test {
 
             let mut gate = Self::default();
             (0..input_arity).for_each(|i_0| {
-                gate.w_1
+                gate.d_1
                     .push((rand_coeff(&mut rng), (i_0, rand_b(&mut rng))))
             });
-            gate.w_2.push((
+            gate.d_2.push((
                 rand_coeff(&mut rng),
                 (0, rand_b(&mut rng)),
                 (0, rand_b(&mut rng)),
@@ -534,15 +620,15 @@ pub mod test {
             for _ in 0..rand_range(1..=32, &mut rng) {
                 let s = rand_coeff(&mut rng);
                 match rand_bool(&mut rng) {
-                    false => gate.w_1.push((s, (rand_i(&mut rng), rand_b(&mut rng)))),
-                    true => gate.w_2.push((
+                    false => gate.d_1.push((s, (rand_i(&mut rng), rand_b(&mut rng)))),
+                    true => gate.d_2.push((
                         s,
                         (rand_i(&mut rng), rand_b(&mut rng)),
                         (rand_i(&mut rng), rand_b(&mut rng)),
                     )),
                 }
             }
-            gate.w_0 = rand_coeff(&mut rng);
+            gate.d_0 = rand_coeff(&mut rng);
             gate
         }
     }
@@ -552,8 +638,8 @@ pub mod test {
         let mut rng = seeded_std_rng();
         for log2_input_size in 1..16 {
             let (circuit, inputs, values) = grand_product_circuit::<Fr>(log2_input_size, &mut rng);
-            assert_eq!(circuit.evaluate(inputs.clone()), values);
-            run_gkr(&circuit, inputs, &mut rng);
+            run_gkr(&circuit, &inputs, &mut rng);
+            assert_eq!(circuit.evaluate(inputs), values);
         }
     }
 
@@ -562,8 +648,8 @@ pub mod test {
         let mut rng = seeded_std_rng();
         for log2_input_size in 1..16 {
             let (circuit, inputs, values) = grand_sum_circuit::<Fr>(log2_input_size, &mut rng);
-            assert_eq!(circuit.evaluate(inputs.clone()), values);
-            run_gkr(&circuit, inputs, &mut rng);
+            run_gkr(&circuit, &inputs, &mut rng);
+            assert_eq!(circuit.evaluate(inputs), values);
         }
     }
 
@@ -572,7 +658,7 @@ pub mod test {
         let mut rng = seeded_std_rng();
         for _ in 1..16 {
             let (circuit, inputs, _) = rand_linear_circuit::<Fr>(&mut rng);
-            run_gkr(&circuit, inputs, &mut rng);
+            run_gkr(&circuit, &inputs, &mut rng);
         }
     }
 
@@ -581,7 +667,7 @@ pub mod test {
         let mut rng = seeded_std_rng();
         for _ in 1..16 {
             let (circuit, inputs, _) = rand_dag_circuit::<Fr>(&mut rng);
-            run_gkr(&circuit, inputs, &mut rng);
+            run_gkr(&circuit, &inputs, &mut rng);
         }
     }
 
@@ -595,14 +681,14 @@ pub mod test {
         };
 
         let nodes = chain![
-            [InputNode::new(log2_input_size).into_boxed()],
+            [InputNode::new(log2_input_size, 1).into_boxed()],
             (0..log2_input_size)
                 .rev()
                 .map(|idx| VanillaNode::new(1, 1, vec![VanillaGate::mul((0, 0), (0, 1))], 1 << idx))
                 .map(Node::into_boxed)
         ]
         .collect_vec();
-        let circuit = Circuit::new(DirectedAcyclicGraph::linear(nodes));
+        let circuit = Circuit::linear(nodes);
         let input = rand_vec(1 << log2_input_size, rng);
         let outputs = iter::successors(Some(input.clone()), |input| succ(input)).collect_vec();
 
@@ -619,14 +705,14 @@ pub mod test {
         };
 
         let nodes = chain![
-            [InputNode::new(log2_input_size).into_boxed()],
+            [InputNode::new(log2_input_size, 1).into_boxed()],
             (0..log2_input_size)
                 .rev()
                 .map(|idx| VanillaNode::new(1, 1, vec![VanillaGate::add((0, 0), (0, 1))], 1 << idx))
                 .map(Node::into_boxed)
         ]
         .collect_vec();
-        let circuit = Circuit::new(DirectedAcyclicGraph::linear(nodes));
+        let circuit = Circuit::linear(nodes);
         let input = rand_vec(1 << log2_input_size, rng);
         let values = iter::successors(Some(input.clone()), |input| succ(input)).collect_vec();
 
@@ -641,7 +727,7 @@ pub mod test {
             .take(num_nodes)
             .collect_vec();
         let nodes = chain![
-            [InputNode::new(log2_sizes[0]).into_boxed()],
+            [InputNode::new(log2_sizes[0], 1).into_boxed()],
             log2_sizes
                 .iter()
                 .tuple_windows()
@@ -650,7 +736,7 @@ pub mod test {
                 })
         ]
         .collect_vec();
-        let circuit = Circuit::new(DirectedAcyclicGraph::linear(nodes));
+        let circuit = Circuit::linear(nodes);
         let input = rand_vec(1 << log2_sizes[0], rng);
         let values = circuit.evaluate(vec![input.clone()]);
 
@@ -664,22 +750,28 @@ pub mod test {
             .map(|idx| rand_range(1..=idx, &mut rng))
             .collect_vec();
         let nodes = chain![
-            [InputNode::new(log2_size).into_boxed()],
+            [InputNode::new(log2_size, 1).into_boxed()],
             input_arities.iter().map(|input_arity| {
                 VanillaNode::rand(*input_arity, log2_size, log2_size, &mut rng).into_boxed()
             })
         ]
         .collect_vec();
         let circuit = {
-            let mut dag = DirectedAcyclicGraph::default();
-            let nodes = nodes.into_iter().map(|node| dag.insert(node)).collect_vec();
+            let mut circuit = Circuit::default();
+            let nodes = nodes
+                .into_iter()
+                .map(|node| circuit.insert(node))
+                .collect_vec();
             izip!(1.., &nodes[1..], &input_arities).for_each(|(idx, to, input_arity)| {
                 rand_unique(*input_arity, |rng| rand_range(0..idx, rng), &mut rng)
                     .into_iter()
-                    .for_each(|from| dag.link(nodes[from], *to))
+                    .for_each(|from| circuit.link(nodes[from], *to))
             });
-            assert_eq!(dag.indegs().skip(1).collect_vec(), input_arities.to_vec());
-            Circuit::new(dag)
+            assert_eq!(
+                circuit.indegs().skip(1).collect_vec(),
+                input_arities.to_vec()
+            );
+            circuit
         };
         let input = rand_vec(1 << log2_size, rng);
         let values = circuit.evaluate(vec![input.clone()]);
