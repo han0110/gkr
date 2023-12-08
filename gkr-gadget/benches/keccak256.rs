@@ -36,7 +36,7 @@ fn keccak256(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("keccak256");
     group.sample_size(10);
-    for num_reps in (5..6).map(|log2| 1 << log2) {
+    for num_reps in (5..10).map(|log2| 1 << log2) {
         let id = BenchmarkId::from_parameter(num_reps);
         let (circuit, values, output_claims) = setup(num_reps);
         group.bench_with_input(id, &num_reps, |b, _| {
