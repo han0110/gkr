@@ -3,7 +3,7 @@ use crate::{
     util::{arithmetic::Field, izip_eq, izip_par, Itertools},
 };
 use rayon::prelude::*;
-use std::ops::Deref;
+use std::{borrow::Cow, ops::Deref};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MultilinearPoly<F> {
@@ -33,11 +33,9 @@ impl<F: Clone> MultilinearPoly<F> {
 
 impl<F: Field> MultilinearPoly<F> {
     pub fn fix_var(&mut self, x_i: &F) {
+        let merge = |evals: &[_]| (evals[1] - evals[0]) * x_i + evals[0];
         self.num_vars -= 1;
-        self.evals = izip_par!(self.evals.par_chunks(2))
-            .with_min_len(64)
-            .map(|eval| (eval[1] - eval[0]) * x_i + eval[0])
-            .collect();
+        self.evals = Vec::from_par_iter(self.evals.par_chunks(2).with_min_len(64).map(merge));
     }
 }
 
@@ -112,15 +110,18 @@ pub fn eq_poly<F: Field>(y: &[F], scalar: F) -> MultilinearPoly<F> {
 pub fn eq_expand<F: Field>(poly: &[F], y: &[F]) -> Vec<F> {
     assert!(poly.len().is_power_of_two());
 
-    y.iter().fold(poly.to_vec(), |poly, y_i| {
-        let one_minus_y_i = F::ONE - y_i;
-        chain_par![
-            poly.par_iter().map(|eval| *eval * one_minus_y_i),
-            poly.par_iter().map(|eval| *eval * y_i),
-        ]
-        .with_min_len(64)
-        .collect()
-    })
+    y.iter()
+        .fold(Cow::Borrowed(poly), |poly, y_i| {
+            let one_minus_y_i = F::ONE - y_i;
+            chain_par![
+                poly.par_iter().map(|eval| *eval * one_minus_y_i),
+                poly.par_iter().map(|eval| *eval * y_i),
+            ]
+            .with_min_len(64)
+            .collect::<Vec<_>>()
+            .into()
+        })
+        .into()
 }
 
 pub fn eq_eval<'a, F: Field>(rs: impl IntoIterator<Item = &'a [F]>) -> F {

@@ -448,7 +448,7 @@ pub mod dev {
             inputs[..inputs.len() - 1]
                 .iter()
                 .fold(vec![vec![0; 25]], |mut states, chunk| {
-                    let mut state: [_; 25] = states[states.len() - 1].clone().try_into().unwrap();
+                    let mut state: [_; 25] = states.last().unwrap().clone().try_into().unwrap();
                     izip!(&mut state, chunk).for_each(|(lhs, rhs)| *lhs ^= rhs);
                     tiny_keccak::keccakf(&mut state);
                     states.push(state.to_vec());
