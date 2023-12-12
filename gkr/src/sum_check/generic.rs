@@ -27,7 +27,12 @@ impl<F: Field> SumCheckFunction<F> for Generic<F> {
         self.degree
     }
 
-    fn compute_sum(&self, _: usize, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F> {
+    fn compute_sum(
+        &self,
+        _: usize,
+        claim: F,
+        polys: &[&(impl MultilinearPoly<F> + ?Sized)],
+    ) -> Vec<F> {
         let registry = &self.registry;
         assert_eq!(polys.len(), registry.datas().len());
 

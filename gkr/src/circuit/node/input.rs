@@ -1,5 +1,6 @@
 use crate::{
     circuit::node::{CombinedEvalClaim, EvalClaim, Node},
+    poly::{BoxMultilinearPoly, DynMultilinearPoly},
     transcript::{TranscriptRead, TranscriptWrite},
     Error,
 };
@@ -34,14 +35,14 @@ impl<F> Node<F> for InputNode {
         self.log2_size + self.log2_reps
     }
 
-    fn evaluate(&self, _: Vec<&Vec<F>>) -> Vec<F> {
+    fn evaluate(&self, _: Vec<&DynMultilinearPoly<F>>) -> BoxMultilinearPoly<'static, F> {
         unreachable!()
     }
 
     fn prove_claim_reduction(
         &self,
         _: CombinedEvalClaim<F>,
-        _: Vec<&Vec<F>>,
+        _: Vec<&DynMultilinearPoly<F>>,
         _: &mut dyn TranscriptWrite<F>,
     ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
         unreachable!()

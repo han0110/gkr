@@ -1,137 +1,133 @@
-use crate::{
-    chain_par,
-    util::{arithmetic::Field, izip_eq, izip_par, Itertools},
-};
+use crate::util::arithmetic::Field;
 use rayon::prelude::*;
-use std::{borrow::Cow, ops::Deref};
+use std::{borrow::Cow, fmt::Debug, ops::Index};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MultilinearPoly<F> {
-    num_vars: usize,
-    evals: Vec<F>,
-}
+mod binary;
+mod dense;
+mod eq;
+mod repeated;
 
-impl<F> MultilinearPoly<F> {
-    pub fn num_vars(&self) -> usize {
-        self.num_vars
+pub use binary::BinaryMultilinearPoly;
+pub use dense::{box_dense_poly, repeated_dense_poly, DenseMultilinearPoly};
+pub use eq::{eq_eval, eq_expand, eq_poly, PartialEqPoly};
+pub use repeated::RepeatedMultilinearPoly;
+
+pub type DynMultilinearPoly<'a, F> = dyn MultilinearPoly<F> + 'a;
+
+pub type BoxMultilinearPoly<'a, F> = Box<DynMultilinearPoly<'a, F>>;
+
+pub type DynMultilinearPolyOwned<'a, F> = dyn MultilinearPolyOwned<F> + 'a;
+
+pub type BoxMultilinearPolyOwned<'a, F> = Box<DynMultilinearPolyOwned<'a, F>>;
+
+#[allow(clippy::len_without_is_empty)]
+pub trait MultilinearPoly<F>: Debug + Send + Sync + Index<usize, Output = F> {
+    fn num_vars(&self) -> usize;
+
+    fn len(&self) -> usize {
+        1 << self.num_vars()
+    }
+
+    fn fix_var(&self, x_i: &F) -> BoxMultilinearPolyOwned<'static, F>;
+
+    fn evaluate(&self, x: &[F]) -> F;
+
+    fn as_dense(&self) -> Option<&[F]>;
+
+    fn clone_box(&self) -> BoxMultilinearPoly<F>;
+
+    fn boxed<'a>(self) -> BoxMultilinearPoly<'a, F>
+    where
+        Self: 'a + Sized,
+    {
+        Box::new(self)
+    }
+
+    fn repeated<'a>(self, log2_reps: usize) -> RepeatedMultilinearPoly<F, Self>
+    where
+        F: Field,
+        Self: 'a + Sized,
+    {
+        RepeatedMultilinearPoly::new(self, log2_reps)
     }
 }
 
-impl<F: Clone> MultilinearPoly<F> {
-    pub fn new(evals: Vec<F>) -> Self {
-        let num_vars = if evals.is_empty() {
-            0
-        } else {
-            let num_vars = evals.len().ilog2() as usize;
-            assert_eq!(evals.len(), 1 << num_vars);
-            num_vars
-        };
-
-        Self { evals, num_vars }
-    }
-}
-
-impl<F: Field> MultilinearPoly<F> {
-    pub fn fix_var(&mut self, x_i: &F) {
-        let merge = |evals: &[_]| (evals[1] - evals[0]) * x_i + evals[0];
-        self.num_vars -= 1;
-        self.evals = Vec::from_par_iter(self.evals.par_chunks(2).with_min_len(64).map(merge));
-    }
-}
-
-impl<F> From<MultilinearPoly<F>> for Vec<F> {
-    fn from(poly: MultilinearPoly<F>) -> Self {
-        poly.evals
-    }
-}
-
-impl<F> Deref for MultilinearPoly<F> {
-    type Target = Vec<F>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.evals
-    }
+pub trait MultilinearPolyOwned<F>: MultilinearPoly<F> {
+    fn fix_var_in_place(&mut self, x_i: &F);
 }
 
 pub fn evaluate<F: Field>(evals: &[F], x: &[F]) -> F {
     assert_eq!(evals.len(), 1 << x.len());
 
-    if x.is_empty() {
-        return evals[0];
-    }
-
-    let x_last = x.last().unwrap();
-    let (lo, hi) = evals.split_at(evals.len() >> 1);
-    let mut buf = lo.to_vec();
-    izip_par!(&mut buf, hi).for_each(|(lo, hi)| *lo += (*hi - lo as &_) * x_last);
-    x.iter().enumerate().rev().skip(1).for_each(|(idx, x_i)| {
-        let (lo, hi) = buf.split_at_mut(1 << idx);
-        izip_par!(lo, &hi[..1 << idx]).for_each(|(lo, hi)| *lo += (*hi - lo as &_) * x_i)
-    });
-    buf[0]
+    x.iter()
+        .fold(Cow::Borrowed(evals), |evals, x_i| merge(&evals, x_i).into())[0]
 }
 
-#[derive(Debug)]
-pub struct PartialEqPoly<F> {
-    r_hi: Vec<F>,
-    eq_r_lo: Vec<F>,
+fn merge<F: Field>(evals: &[F], x_i: &F) -> Vec<F> {
+    let merge = |evals: &[_]| (evals[1] - evals[0]) * x_i + evals[0];
+    evals.par_chunks(2).with_min_len(64).map(merge).collect()
 }
 
-impl<F> Deref for PartialEqPoly<F> {
-    type Target = Vec<F>;
+macro_rules! forward_impl {
+    (<$($generics:tt),*>, $type:ty $(, { $($custom:tt)* })?) => {
+        impl<'a, F> Index<usize> for $type {
+            type Output = F;
 
-    fn deref(&self) -> &Self::Target {
-        &self.eq_r_lo
-    }
-}
-
-impl<F: Field> PartialEqPoly<F> {
-    pub fn new(r: &[F], mid: usize, scalar: F) -> Self {
-        let (r_lo, r_hi) = r.split_at(mid);
-        PartialEqPoly {
-            r_hi: r_hi.to_vec(),
-            eq_r_lo: eq_expand(&[scalar], r_lo),
+            fn index(&self, index: usize) -> &Self::Output {
+                &(**self)[index]
+            }
         }
-    }
 
-    pub fn r_hi(&self) -> &[F] {
-        &self.r_hi
-    }
+        impl<$($generics),*> MultilinearPoly<F> for $type {
+            fn clone_box(&self) -> BoxMultilinearPoly<F> {
+                (**self).clone_box()
+            }
 
-    pub fn expand(&self) -> Vec<F> {
-        eq_expand(&self.eq_r_lo, &self.r_hi)
-    }
+            fn num_vars(&self) -> usize {
+                (**self).num_vars()
+            }
+
+            fn len(&self) -> usize {
+                (**self).len()
+            }
+
+            fn fix_var(&self, x_i: &F) -> BoxMultilinearPolyOwned<'static, F> {
+                (**self).fix_var(x_i)
+            }
+
+            fn evaluate(&self, x: &[F]) -> F {
+                (**self).evaluate(x)
+            }
+
+            fn as_dense(&self) -> Option<&[F]> {
+                (**self).as_dense()
+            }
+
+            $($($custom)*)?
+        }
+    };
 }
 
-pub fn eq_poly<F: Field>(y: &[F], scalar: F) -> MultilinearPoly<F> {
-    MultilinearPoly::new(eq_expand(&[scalar], y))
-}
+forward_impl!(<'a, F>, &DynMultilinearPoly<'a, F>);
+forward_impl!(<'a, F>, BoxMultilinearPoly<'a, F>, {
+    fn boxed<'b>(self) -> BoxMultilinearPoly<'b, F> where Self: 'b { self }
+});
+forward_impl!(<'a, F>, BoxMultilinearPolyOwned<'a, F>);
 
-pub fn eq_expand<F: Field>(poly: &[F], y: &[F]) -> Vec<F> {
-    assert!(poly.len().is_power_of_two());
+#[cfg(test)]
+pub(crate) mod test {
+    use crate::{
+        poly::MultilinearPoly,
+        util::{arithmetic::Field, izip_eq, Itertools},
+    };
 
-    y.iter()
-        .fold(Cow::Borrowed(poly), |poly, y_i| {
-            let one_minus_y_i = F::ONE - y_i;
-            chain_par![
-                poly.par_iter().map(|eval| *eval * one_minus_y_i),
-                poly.par_iter().map(|eval| *eval * y_i),
-            ]
-            .with_min_len(64)
-            .collect::<Vec<_>>()
-            .into()
-        })
-        .into()
-}
-
-pub fn eq_eval<'a, F: Field>(rs: impl IntoIterator<Item = &'a [F]>) -> F {
-    let rs = rs.into_iter().collect_vec();
-    match rs.len() {
-        2 => F::product(izip_eq!(rs[0], rs[1]).map(|(&x, &y)| (x * y).double() + F::ONE - x - y)),
-        3 => F::product(
-            izip_eq!(rs[0], rs[1], rs[2])
-                .map(|(&x, &y, &z)| F::ONE + x * (y + z - F::ONE) + y * (z - F::ONE) - z),
-        ),
-        _ => unimplemented!(),
+    pub(crate) fn assert_polys_eq<'a, F: Field>(
+        lhs: impl IntoIterator<Item = &'a (impl MultilinearPoly<F> + 'a)>,
+        rhs: impl IntoIterator<Item = &'a (impl MultilinearPoly<F> + 'a)>,
+    ) {
+        izip_eq!(lhs, rhs).for_each(|(lhs, rhs)| {
+            assert_eq!(lhs.num_vars(), rhs.num_vars());
+            (0..lhs.len()).for_each(|b| assert_eq!(lhs[b], rhs[b]));
+        });
     }
 }
