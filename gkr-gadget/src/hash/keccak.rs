@@ -1,5 +1,6 @@
 use gkr::{
     circuit::{
+        connect,
         node::{InputNode, Node, VanillaGate, VanillaNode},
         Circuit, NodeId,
     },
@@ -7,7 +8,9 @@ use gkr::{
 };
 use std::iter;
 
+#[derive(Clone, Copy, Debug)]
 pub struct Keccak {
+    num_bits: usize,
     rate: usize,
     perm: KeccakPerm,
 }
@@ -21,15 +24,28 @@ impl Keccak {
         Self::new(256, num_reps)
     }
 
-    const fn new(num_bits: usize, num_reps: usize) -> Self {
+    pub const fn new(num_bits: usize, num_reps: usize) -> Self {
         Self {
-            rate: Self::rate(num_bits),
+            num_bits,
+            rate: 200 - num_bits / 4,
             perm: KeccakPerm::new(num_reps),
         }
     }
 
-    const fn rate(num_bits: usize) -> usize {
-        200 - num_bits / 4
+    pub const fn num_bits(&self) -> usize {
+        self.num_bits
+    }
+
+    pub const fn rate(&self) -> usize {
+        self.rate
+    }
+
+    pub const fn num_reps(&self) -> usize {
+        self.perm.num_reps()
+    }
+
+    pub const fn log2_reps(&self) -> usize {
+        self.perm.log2_reps()
     }
 
     pub const fn log2_size(&self) -> usize {
@@ -64,13 +80,13 @@ impl Keccak {
 
         let state_prime = circuit.insert(state_prime);
 
-        circuit.link(state, state_prime);
-        circuit.link(input, state_prime);
+        connect!(circuit { state_prime <- state, input });
 
         self.perm.configure(circuit, state_prime)
     }
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct KeccakPerm {
     num_reps: usize,
     log2_reps: usize,
@@ -96,6 +112,14 @@ impl KeccakPerm {
             num_reps,
             log2_reps: num_reps.next_power_of_two().ilog2() as usize,
         }
+    }
+
+    pub const fn num_reps(&self) -> usize {
+        self.num_reps
+    }
+
+    pub const fn log2_reps(&self) -> usize {
+        self.log2_reps
     }
 
     pub const fn log2_size(&self) -> usize {
@@ -137,16 +161,7 @@ impl KeccakPerm {
                 .collect();
             VanillaNode::new(1, n_1.log2_sub_output_size(), gates, self.num_reps)
         };
-        let n_3_0 = {
-            let gates = [(0, 2), (1, 3), (2, 4), (3, 0), (4, 1)]
-                .into_iter()
-                .flat_map(|(lhs, rhs)| {
-                    xor_gates(WordIdx::new(lhs), WordIdx::new(rhs).rotate_left(1))
-                })
-                .collect();
-            VanillaNode::new(1, n_2.log2_sub_output_size(), gates, self.num_reps)
-        };
-        let n_3_1 = {
+        let n_3 = {
             let gates = [(20, 22), (21, 23), (22, 24), (23, 20), (24, 21)]
                 .into_iter()
                 .flat_map(|(lhs, rhs)| {
@@ -156,6 +171,15 @@ impl KeccakPerm {
             VanillaNode::new(1, Self::LOG2_STATE_SIZE, gates, self.num_reps)
         };
         let n_4 = {
+            let gates = [(0, 2), (1, 3), (2, 4), (3, 0), (4, 1)]
+                .into_iter()
+                .flat_map(|(lhs, rhs)| {
+                    xor_gates(WordIdx::new(lhs), WordIdx::new(rhs).rotate_left(1))
+                })
+                .collect();
+            VanillaNode::new(1, n_2.log2_sub_output_size(), gates, self.num_reps)
+        };
+        let n_5 = {
             let gates = chain![
                 [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)]
                     .into_iter()
@@ -167,28 +191,28 @@ impl KeccakPerm {
             ]
             .take(1 << Self::LOG2_STATE_SIZE)
             .collect();
-            VanillaNode::new(2, n_3_0.log2_sub_output_size(), gates, self.num_reps)
+            VanillaNode::new(2, n_3.log2_sub_output_size(), gates, self.num_reps)
         };
-        let n_5 = {
+        let n_6 = {
             let gates = izip!(0..25, iter::repeat([4, 0, 1, 2, 3]).flatten())
                 .flat_map(|(lhs, rhs)| xor_gates(WordIdx::new(lhs), WordIdx::new(rhs).input(1)))
                 .collect();
             VanillaNode::new(2, Self::LOG2_STATE_SIZE, gates, self.num_reps)
         };
 
-        let [n_1, n_2, n_3_0, n_3_1, n_4, n_5] =
-            [n_1, n_2, n_3_0, n_3_1, n_4, n_5].map(|node| circuit.insert(node.into_boxed()));
+        let [n_1, n_2, n_3, n_4, n_5, n_6] =
+            [n_1, n_2, n_3, n_4, n_5, n_6].map(|node| circuit.insert(node));
 
-        circuit.link(state, n_1);
-        circuit.link(n_1, n_2);
-        circuit.link(n_2, n_3_0);
-        circuit.link(state, n_3_1);
-        circuit.link(n_3_0, n_4);
-        circuit.link(n_3_1, n_4);
-        circuit.link(state, n_5);
-        circuit.link(n_4, n_5);
+        connect!(circuit {
+            n_1 <- state;
+            n_2 <- n_1;
+            n_3 <- state;
+            n_4 <- n_2;
+            n_5 <- n_3, n_4;
+            n_6 <- state, n_5;
+        });
 
-        n_5
+        n_6
     }
 
     fn configure_rho_pi_chi_iota<F: Field>(
@@ -225,7 +249,7 @@ impl KeccakPerm {
             (21, 2),
         ]
         .map(|(idx, rotate_left)| WordIdx::new(idx).rotate_left(rotate_left));
-        let n_6 = {
+        let n_7 = {
             let gates = [
                 (1, 2),
                 (2, 3),
@@ -258,7 +282,7 @@ impl KeccakPerm {
             .collect();
             VanillaNode::new(1, Self::LOG2_STATE_SIZE, gates, self.num_reps)
         };
-        let n_7 = {
+        let n_8 = {
             let gates = chain![
                 xor_with_rc_gates(words[0], WordIdx::new(0).input(1), rc),
                 (1..25).flat_map(|idx| xor_gates(words[idx], WordIdx::new(idx).input(1)))
@@ -267,13 +291,14 @@ impl KeccakPerm {
             VanillaNode::new(2, Self::LOG2_STATE_SIZE, gates, self.num_reps)
         };
 
-        let [n_6, n_7] = [n_6, n_7].map(|node| circuit.insert(node.into_boxed()));
+        let [n_7, n_8] = [n_7, n_8].map(|node| circuit.insert(node));
 
-        circuit.link(state, n_6);
-        circuit.link(state, n_7);
-        circuit.link(n_6, n_7);
+        connect!(circuit {
+            n_7 <- state;
+            n_8 <- state, n_7;
+        });
 
-        n_7
+        n_8
     }
 }
 
@@ -342,93 +367,41 @@ fn not_lhs_and_rhs_gates<F: Field>(
     })
 }
 
-#[cfg(test)]
-pub mod test {
-    use crate::hash::keccak::{
-        dev::{keccak_circuit, keccak_circuit_inputs},
-        Keccak,
-    };
-    use gkr::{
-        dev::run_gkr,
-        util::{
-            arithmetic::{try_felt_to_bool, Field, PrimeField},
-            dev::{rand_bytes, rand_range, seeded_std_rng},
-            RngCore,
-        },
-    };
-    use halo2_curves::bn256::Fr;
-
-    #[test]
-    fn keccak256() {
-        let mut rng = seeded_std_rng();
-        for num_reps in (0..4).map(|log2| 1 << log2) {
-            run_keccak::<Fr>(256, num_reps, &mut rng);
-        }
-    }
-
-    fn run_keccak<F: PrimeField>(num_bits: usize, num_reps: usize, mut rng: impl RngCore) {
-        let rate = Keccak::rate(num_bits);
-        let input = rand_bytes(rand_range(0..num_reps * rate, &mut rng), &mut rng);
-
-        let circuit = keccak_circuit::<F>(num_bits, num_reps);
-        let inputs = keccak_circuit_inputs(num_bits, num_reps, &input);
-        run_gkr(&circuit, &inputs, &mut rng);
-
-        let offset = (input.len() / rate) << Keccak::LOG2_STATE_SIZE;
-        let output = felts_to_bytes(&circuit.evaluate(inputs).pop().unwrap()[offset..][..256]);
-        assert_eq!(output, native_keccak(num_bits, &input));
-    }
-
-    fn native_keccak(num_bits: usize, input: &[u8]) -> Vec<u8> {
-        use tiny_keccak::{Hasher, Keccak};
-        let mut keccak = match num_bits {
-            256 => Keccak::v256(),
-            _ => unreachable!(),
-        };
-        let mut output = vec![0; 32];
-        keccak.update(input);
-        keccak.finalize(&mut output);
-        output
-    }
-
-    fn felts_to_bytes<F: Field>(output: &[F]) -> Vec<u8> {
-        Vec::from_iter(output.chunks_exact(8).map(|word| {
-            word.iter()
-                .rev()
-                .copied()
-                .map(try_felt_to_bool)
-                .fold(0, |acc, bit| (acc << 1) + bit.unwrap() as u8)
-        }))
-    }
-}
-
 #[cfg(any(test, feature = "dev"))]
 pub mod dev {
     use crate::hash::keccak::Keccak;
     use gkr::{
         circuit::Circuit,
+        poly::{BinaryMultilinearPoly, BoxMultilinearPoly, MultilinearPoly},
         util::{
-            arithmetic::{bool_to_felt, Field},
+            arithmetic::{try_felt_to_bool, Field},
             chain, izip, Itertools,
         },
     };
     use std::iter;
 
-    pub fn keccak_circuit<F: Field>(num_bits: usize, num_reps: usize) -> Circuit<F> {
-        let mut circuit = Circuit::default();
-        let keccak = Keccak::new(num_bits, num_reps);
-        let state = keccak.alloc_state(&mut circuit);
-        let input = keccak.alloc_input(&mut circuit);
-        keccak.configure(&mut circuit, state, input);
-        circuit
+    pub fn keccak_circuit<F: Field>(
+        keccak: Keccak,
+        input: &[u8],
+    ) -> (Circuit<F>, Vec<BoxMultilinearPoly<'static, F>>) {
+        let circuit = {
+            let mut circuit = Circuit::default();
+            let state = keccak.alloc_state(&mut circuit);
+            let input = keccak.alloc_input(&mut circuit);
+            keccak.configure(&mut circuit, state, input);
+            circuit
+        };
+        let inputs = keccak_circuit_inputs(keccak, input);
+        let values = circuit.evaluate(inputs).into_iter().map(box_binary_poly);
+
+        (circuit, values.collect())
     }
 
-    pub fn keccak_circuit_inputs<F: Field>(
-        num_bits: usize,
-        num_reps: usize,
+    fn keccak_circuit_inputs<F: Field>(
+        keccak: Keccak,
         input: &[u8],
-    ) -> Vec<Vec<F>> {
-        let rate = Keccak::rate(num_bits);
+    ) -> Vec<BoxMultilinearPoly<'static, F>> {
+        let rate = keccak.rate();
         let inputs = chain![input.chunks(rate), [[].as_slice()]]
             .take(input.len() / rate + 1)
             .map(|chunk| {
@@ -447,24 +420,35 @@ pub mod dev {
             inputs[..inputs.len() - 1]
                 .iter()
                 .fold(vec![vec![0; 25]], |mut states, chunk| {
-                    let mut state: [_; 25] = states[states.len() - 1].clone().try_into().unwrap();
+                    let mut state: [_; 25] = states.last().unwrap().clone().try_into().unwrap();
                     izip!(&mut state, chunk).for_each(|(lhs, rhs)| *lhs ^= rhs);
                     tiny_keccak::keccakf(&mut state);
                     states.push(state.to_vec());
                     states
                 });
 
-        let len = num_reps.next_power_of_two() << Keccak::LOG2_STATE_SIZE;
+        let log2_size = keccak.log2_size();
+        let word_size = 1 << (log2_size - BinaryMultilinearPoly::<F>::LOG2_BITS);
         [states, inputs]
             .into_iter()
             .map(|values| {
-                let padded_values = values.into_iter().flat_map(|value| {
-                    chain![words_to_felts(value), iter::repeat(F::ZERO)]
-                        .take(1 << Keccak::LOG2_STATE_SIZE)
-                });
-                Vec::from_iter(chain![padded_values, iter::repeat(F::ZERO)].take(len))
+                let padded_values = values
+                    .into_iter()
+                    .flat_map(|value| chain![value, iter::repeat(0)].take(32));
+                Vec::from_iter(chain![padded_values, iter::repeat(0)].take(word_size))
             })
+            .map(|value| BinaryMultilinearPoly::new(value, log2_size).boxed())
             .collect()
+    }
+
+    fn box_binary_poly<F: Field>(poly: BoxMultilinearPoly<F>) -> BoxMultilinearPoly<F> {
+        let words = Vec::from_iter((0..poly.len()).step_by(64).map(|offset| {
+            (offset..offset + 64)
+                .rev()
+                .map(|b| try_felt_to_bool(poly[b]).unwrap())
+                .fold(0, |acc, bit| (acc << 1) + bit as u64)
+        }));
+        BinaryMultilinearPoly::new(words, poly.num_vars()).boxed()
     }
 
     fn u64_from_le_bytes(bytes: &[u8]) -> u64 {
@@ -472,11 +456,64 @@ pub mod dev {
         word.copy_from_slice(bytes);
         u64::from_le_bytes(word)
     }
+}
 
-    fn words_to_felts<F: Field>(words: Vec<u64>) -> impl Iterator<Item = F> {
-        words
-            .into_iter()
-            .flat_map(|word| (0..u64::BITS).map(move |idx| (word >> idx) & 1 == 1))
-            .map(bool_to_felt)
+#[cfg(test)]
+pub mod test {
+    use crate::hash::keccak::{dev::keccak_circuit, Keccak};
+    use gkr::{
+        dev::run_gkr_with_values,
+        poly::MultilinearPoly,
+        util::{
+            arithmetic::{try_felt_to_bool, Field, PrimeField},
+            dev::{rand_bytes, rand_range, seeded_std_rng},
+            RngCore,
+        },
+    };
+    use halo2_curves::bn256::Fr;
+
+    #[test]
+    fn keccak256() {
+        let mut rng = seeded_std_rng();
+        for num_reps in (0..4).map(|log2| 1 << log2) {
+            run_keccak::<Fr>(256, num_reps, &mut rng);
+        }
+    }
+
+    fn run_keccak<F: PrimeField>(num_bits: usize, num_reps: usize, mut rng: impl RngCore) {
+        let keccak = Keccak::new(num_bits, num_reps);
+        let input = rand_bytes(rand_range(0..num_reps * keccak.rate(), &mut rng), &mut rng);
+
+        let (circuit, values) = keccak_circuit::<F>(keccak, &input);
+        run_gkr_with_values(&circuit, &values, &mut rng);
+
+        let offset = (input.len() / keccak.rate()) << Keccak::LOG2_STATE_SIZE;
+        let output = extract_bytes(num_bits, offset, values.into_iter().last().unwrap());
+        assert_eq!(output, native_keccak(num_bits, &input));
+    }
+
+    fn native_keccak(num_bits: usize, input: &[u8]) -> Vec<u8> {
+        use tiny_keccak::{Hasher, Keccak};
+        let mut keccak = match num_bits {
+            256 => Keccak::v256(),
+            _ => unreachable!(),
+        };
+        let mut output = vec![0; 32];
+        keccak.update(input);
+        keccak.finalize(&mut output);
+        output
+    }
+
+    fn extract_bytes<F: Field>(
+        num_bits: usize,
+        offset: usize,
+        output: impl MultilinearPoly<F>,
+    ) -> Vec<u8> {
+        Vec::from_iter((offset..).take(num_bits).step_by(8).map(|offset| {
+            (offset..offset + 8)
+                .rev()
+                .map(|b| try_felt_to_bool(output[b]).unwrap())
+                .fold(0, |acc, bit| (acc << 1) + bit as u8)
+        }))
     }
 }

@@ -3,7 +3,7 @@ use crate::{
         node::{CombinedEvalClaim, EvalClaim},
         Circuit,
     },
-    poly::evaluate,
+    poly::{BoxMultilinearPoly, MultilinearPoly},
     transcript::{Transcript, TranscriptRead, TranscriptWrite},
     util::{arithmetic::Field, Itertools},
 };
@@ -26,7 +26,7 @@ pub enum Error {
 
 pub fn prove_gkr<F: Field>(
     circuit: &Circuit<F>,
-    values: &[Vec<F>],
+    values: &[BoxMultilinearPoly<F>],
     output_claims: &[EvalClaim<F>],
     transcript: &mut impl TranscriptWrite<F>,
 ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
@@ -36,7 +36,7 @@ pub fn prove_gkr<F: Field>(
 
     if cfg!(feature = "sanity-check") {
         izip_eq!(circuit.outputs(), output_claims).for_each(|(idx, claim)| {
-            assert_eq!(evaluate(&values[idx], claim.point()), claim.value())
+            assert_eq!(values[idx].evaluate(claim.point()), claim.value())
         });
     }
 
@@ -50,7 +50,7 @@ pub fn prove_gkr<F: Field>(
         }
 
         let claim = combined_claim(take(&mut claims[idx]), transcript);
-        let inputs = Vec::from_iter(circuit.predec(idx).map(|idx| &values[idx]));
+        let inputs = circuit.predec(idx).map(|idx| &*values[idx]).collect();
         let sub_claims = node.prove_claim_reduction(claim, inputs, transcript)?;
 
         izip_eq!(circuit.predec(idx), sub_claims)

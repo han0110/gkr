@@ -15,14 +15,19 @@ impl<F: Field> SumCheckFunction<F> for Quadratic {
         2
     }
 
-    fn compute_sum(&self, _: usize, claim: F, polys: &[MultilinearPoly<F>]) -> Vec<F> {
+    fn compute_sum(
+        &self,
+        _: usize,
+        claim: F,
+        polys: &[&(impl MultilinearPoly<F> + ?Sized)],
+    ) -> Vec<F> {
         assert_eq!(polys.len() % 2, 0);
         let (a, b) = polys.split_at(polys.len() >> 1);
 
         if cfg!(feature = "sanity-check") {
             assert_eq!(
                 izip_par!(a, b)
-                    .flat_map(|(a, b)| izip_par!(&a[..], &b[..]).map(|(a, b)| *a * b))
+                    .flat_map(|(a, b)| (0..a.len()).into_par_iter().map(|idx| a[idx] * b[idx]))
                     .sum::<F>(),
                 claim
             )
@@ -30,11 +35,13 @@ impl<F: Field> SumCheckFunction<F> for Quadratic {
 
         let AdditiveArray([coeff_0, coeff_2]) = izip_par!(a, b)
             .flat_map(|(a, b)| {
-                izip_par!(a.par_chunks(2), b.par_chunks(2))
+                (0..a.len())
+                    .into_par_iter()
+                    .step_by(2)
                     .with_min_len(64)
-                    .fold_with(AdditiveArray::default(), |mut coeffs, (a, b)| {
-                        coeffs[0] += a[0] * b[0];
-                        coeffs[1] += (a[1] - a[0]) * (b[1] - b[0]);
+                    .fold_with(AdditiveArray::default(), |mut coeffs, idx| {
+                        coeffs[0] += a[idx] * b[idx];
+                        coeffs[1] += (a[idx + 1] - a[idx]) * (b[idx + 1] - b[idx]);
                         coeffs
                     })
             })

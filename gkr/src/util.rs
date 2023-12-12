@@ -1,13 +1,13 @@
-pub use itertools::{chain, izip, Itertools};
-pub use rand_chacha::ChaCha12Rng as StdRng;
-pub use rand_core::{CryptoRng, RngCore, SeedableRng};
-
 pub mod arithmetic;
 pub mod collection;
 pub mod expression;
 
 #[cfg(any(test, feature = "dev"))]
 pub mod dev;
+
+pub use itertools::{chain, izip, Itertools};
+pub use rand_chacha::ChaCha12Rng as StdRng;
+pub use rand_core::{CryptoRng, RngCore, SeedableRng};
 
 #[macro_export]
 macro_rules! chain_par {

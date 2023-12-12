@@ -1,6 +1,9 @@
 use crate::{
     circuit::node::{CombinedEvalClaim, EvalClaim, Node},
-    poly::{eq_eval, MultilinearPoly, PartialEqPoly},
+    poly::{
+        box_dense_poly, eq_eval, repeated_dense_poly, BoxMultilinearPoly, DynMultilinearPoly,
+        MultilinearPoly, PartialEqPoly,
+    },
     sum_check::{
         err_unmatched_evaluation, prove_sum_check, quadratic::Quadratic, verify_sum_check,
     },
@@ -18,7 +21,6 @@ use rayon::prelude::*;
 use std::{
     collections::{BTreeSet, HashMap},
     iter,
-    slice::from_ref,
 };
 
 #[derive(Clone, Debug)]
@@ -45,11 +47,11 @@ impl<F: Field> Node<F> for VanillaNode<F> {
         self.log2_sub_output_size + self.log2_reps
     }
 
-    fn evaluate(&self, inputs: Vec<&Vec<F>>) -> Vec<F> {
+    fn evaluate(&self, inputs: Vec<&DynMultilinearPoly<F>>) -> BoxMultilinearPoly<'static, F> {
         assert_eq!(inputs.len(), self.input_arity);
         assert!(!inputs.iter().any(|input| input.len() != self.input_size()));
 
-        (0..self.output_size())
+        let output = (0..self.output_size())
             .into_par_iter()
             .map(|b_g| {
                 let b_x = (b_g >> self.log2_sub_output_size) << self.log2_sub_input_size;
@@ -65,14 +67,15 @@ impl<F: Field> Node<F> for VanillaNode<F> {
                 ]
                 .sum()
             })
-            .collect()
+            .collect::<Vec<_>>();
+        box_dense_poly(output)
     }
 
-    fn prove_claim_reduction<'a>(
+    fn prove_claim_reduction(
         &self,
         claim: CombinedEvalClaim<F>,
-        inputs: Vec<&Vec<F>>,
-        transcript: &mut (dyn TranscriptWrite<F> + 'a),
+        inputs: Vec<&DynMultilinearPoly<F>>,
+        transcript: &mut dyn TranscriptWrite<F>,
     ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
         assert_eq!(inputs.len(), self.input_arity);
 
@@ -84,9 +87,11 @@ impl<F: Field> Node<F> for VanillaNode<F> {
         let mut eq_r_xs = Vec::new();
         let mut input_r_xs = Vec::new();
         for (phase, indices) in izip!(0.., &self.inputs) {
-            let polys = self.sum_check_polys(&inputs, &eq_r_g_prime, &eq_r_xs, &input_r_xs);
             let (subclaim, r_x_i, evals) = {
                 let claim = claim - self.sum_check_eval(&eq_r_gs, &eq_r_xs, &input_r_xs);
+                let (wiring, inputs) =
+                    self.sum_check_polys(&inputs, &eq_r_g_prime, &eq_r_xs, &input_r_xs);
+                let polys = chain![wiring.iter().map(AsRef::as_ref), inputs];
                 prove_sum_check(&Quadratic, self.log2_input_size(), claim, polys, transcript)?
             };
             let input_r_x_is = evals.into_iter().skip(indices.len()).collect_vec();
@@ -169,7 +174,9 @@ impl<F: Field> VanillaNode<F> {
             })
             .unique()
             .fold(Vec::new(), |mut inputs, (phase, i)| {
-                inputs.resize_with(phase + 1, BTreeSet::new);
+                if inputs.len() < phase + 1 {
+                    inputs.resize_with(phase + 1, BTreeSet::new);
+                }
                 inputs[phase].insert(i);
                 inputs
             });
@@ -190,16 +197,8 @@ impl<F: Field> VanillaNode<F> {
         self.log2_sub_input_size
     }
 
-    fn sub_input_size(&self) -> usize {
-        1 << self.log2_sub_input_size
-    }
-
     pub fn log2_sub_output_size(&self) -> usize {
         self.log2_sub_output_size
-    }
-
-    fn sub_output_size(&self) -> usize {
-        1 << self.log2_sub_output_size
     }
 
     pub fn log2_reps(&self) -> usize {
@@ -216,8 +215,8 @@ impl<F: Field> VanillaNode<F> {
             .collect()
     }
 
-    fn eq_r_g_prime(&self, eq_r_gs: &[PartialEqPoly<F>]) -> Vec<F> {
-        eq_r_gs.par_iter().map(PartialEqPoly::expand).hada_sum()
+    fn eq_r_g_prime(&self, eq_r_gs: &[PartialEqPoly<F>]) -> BoxMultilinearPoly<'static, F> {
+        box_dense_poly(eq_r_gs.par_iter().map(PartialEqPoly::expand).hada_sum())
     }
 
     fn eq_r_x(&self, r_x: &[F], input_r_xs: &HashMap<usize, F>) -> PartialEqPoly<F> {
@@ -229,55 +228,61 @@ impl<F: Field> VanillaNode<F> {
         PartialEqPoly::new(r_x, self.log2_sub_input_size, scalar)
     }
 
-    fn sum_check_polys(
+    fn sum_check_polys<'a>(
         &self,
-        inputs: &[&Vec<F>],
-        eq_r_g_prime: &[F],
+        inputs: &'a [&DynMultilinearPoly<F>],
+        eq_r_g_prime: &DynMultilinearPoly<F>,
         eq_r_xs: &[PartialEqPoly<F>],
         input_r_xs: &[HashMap<usize, F>],
-    ) -> Vec<MultilinearPoly<F>> {
+    ) -> (Vec<BoxMultilinearPoly<F>>, Vec<&DynMultilinearPoly<'a, F>>) {
         let phase = eq_r_xs.len();
         let wirings = match phase {
             0 => self.phase_0_wiring(inputs, eq_r_g_prime),
             1 => self.phase_1_wiring(eq_r_g_prime, eq_r_xs, input_r_xs),
             _ => unreachable!(),
         };
-        let inputs = self.inputs[phase]
-            .iter()
-            .map(|input| MultilinearPoly::new(inputs[*input].clone()));
-        chain![wirings, inputs].collect()
+        let inputs = self.inputs[phase].iter().map(|input| inputs[*input]);
+        (wirings, inputs.collect())
     }
 
-    fn phase_0_wiring(&self, inputs: &[&Vec<F>], eq_r_g_prime: &[F]) -> Vec<MultilinearPoly<F>> {
-        let inputs = inputs
-            .iter()
-            .map(|input| input.chunks(self.sub_input_size()).collect());
-        let eqs = [eq_r_g_prime.chunks(self.sub_output_size()).collect()];
-        self.inner_wiring(0, chain![inputs, eqs].collect())
+    fn phase_0_wiring(
+        &self,
+        inputs: &[&DynMultilinearPoly<F>],
+        eq_r_g_prime: &DynMultilinearPoly<F>,
+    ) -> Vec<BoxMultilinearPoly<'static, F>> {
+        self.inner_wiring(0, chain![inputs.iter().copied(), [eq_r_g_prime]].collect())
     }
 
     fn phase_1_wiring(
         &self,
-        eq_r_g_prime: &[F],
+        eq_r_g_prime: &DynMultilinearPoly<F>,
         eq_r_xs: &[PartialEqPoly<F>],
         input_r_xs: &[HashMap<usize, F>],
-    ) -> Vec<MultilinearPoly<F>> {
+    ) -> Vec<BoxMultilinearPoly<'static, F>> {
         let inputs = self.inputs[0]
             .iter()
-            .map(|i| vec![from_ref(&input_r_xs[0][i]); self.num_reps()]);
-        let eq_r_x_0 = eq_r_xs[0].expand();
-        let eqs = [
-            eq_r_g_prime.chunks(self.sub_output_size()).collect(),
-            eq_r_x_0.chunks(self.sub_input_size()).collect(),
-        ];
-        self.inner_wiring(1, chain![inputs, eqs].collect())
+            .map(|i| repeated_dense_poly([input_r_xs[0][i]], self.log2_input_size()))
+            .collect_vec();
+        let eq_r_x_0 = box_dense_poly(eq_r_xs[0].expand());
+        let eqs = [eq_r_g_prime, eq_r_x_0.as_ref()];
+        self.inner_wiring(1, chain![inputs.iter().map(AsRef::as_ref), eqs].collect())
     }
 
-    fn inner_wiring(&self, phase: usize, data: Vec<Vec<&[F]>>) -> Vec<MultilinearPoly<F>> {
+    fn inner_wiring(
+        &self,
+        phase: usize,
+        data: Vec<&DynMultilinearPoly<F>>,
+    ) -> Vec<BoxMultilinearPoly<'static, F>> {
         let evaluate = |expr: &Expression<F, Wire>, rep: usize| {
             expr.evaluate(
                 &|constant| constant,
-                &|(idx, b)| data[idx][rep][b],
+                &|(idx, b)| {
+                    if data[idx].num_vars() == self.log2_input_size() {
+                        data[idx][(rep << self.log2_sub_input_size()) + b]
+                    } else {
+                        data[idx][(rep << self.log2_sub_output_size()) + b]
+                    }
+                },
                 &|value| -value,
                 &|lhs, rhs| lhs + rhs,
                 &|lhs, rhs| lhs * rhs,
@@ -295,7 +300,7 @@ impl<F: Field> VanillaNode<F> {
         self.wirings[phase]
             .par_iter()
             .map(wiring)
-            .map(MultilinearPoly::new)
+            .map(box_dense_poly)
             .collect()
     }
 
@@ -572,6 +577,7 @@ pub mod test {
             Circuit,
         },
         dev::run_gkr,
+        poly::{box_dense_poly, test::assert_polys_eq, BoxMultilinearPoly},
         util::{
             arithmetic::Field,
             chain,
@@ -639,7 +645,7 @@ pub mod test {
         for log2_input_size in 1..16 {
             let (circuit, inputs, values) = grand_product_circuit::<Fr>(log2_input_size, &mut rng);
             run_gkr(&circuit, &inputs, &mut rng);
-            assert_eq!(circuit.evaluate(inputs), values);
+            assert_polys_eq(&circuit.evaluate(inputs), &values);
         }
     }
 
@@ -649,7 +655,7 @@ pub mod test {
         for log2_input_size in 1..16 {
             let (circuit, inputs, values) = grand_sum_circuit::<Fr>(log2_input_size, &mut rng);
             run_gkr(&circuit, &inputs, &mut rng);
-            assert_eq!(circuit.evaluate(inputs), values);
+            assert_polys_eq(&circuit.evaluate(inputs), &values);
         }
     }
 
@@ -657,7 +663,7 @@ pub mod test {
     fn rand_linear() {
         let mut rng = seeded_std_rng();
         for _ in 1..16 {
-            let (circuit, inputs, _) = rand_linear_circuit::<Fr>(&mut rng);
+            let (circuit, inputs) = rand_linear_circuit::<Fr>(&mut rng);
             run_gkr(&circuit, &inputs, &mut rng);
         }
     }
@@ -666,7 +672,7 @@ pub mod test {
     fn rand_dag() {
         let mut rng = seeded_std_rng();
         for _ in 1..16 {
-            let (circuit, inputs, _) = rand_dag_circuit::<Fr>(&mut rng);
+            let (circuit, inputs) = rand_dag_circuit::<Fr>(&mut rng);
             run_gkr(&circuit, &inputs, &mut rng);
         }
     }
@@ -674,85 +680,94 @@ pub mod test {
     fn grand_product_circuit<F: Field>(
         log2_input_size: usize,
         rng: impl RngCore,
-    ) -> (Circuit<F>, Vec<Vec<F>>, Vec<Vec<F>>) {
+    ) -> (
+        Circuit<F>,
+        Vec<BoxMultilinearPoly<'static, F>>,
+        Vec<BoxMultilinearPoly<'static, F>>,
+    ) {
         let succ = |input: &[_]| {
             (input.len() > 1)
                 .then(|| Vec::from_iter(input.iter().tuples().map(|(lhs, rhs)| *lhs * rhs)))
         };
 
         let nodes = chain![
-            [InputNode::new(log2_input_size, 1).into_boxed()],
+            [InputNode::new(log2_input_size, 1).boxed()],
             (0..log2_input_size)
                 .rev()
                 .map(|idx| VanillaNode::new(1, 1, vec![VanillaGate::mul((0, 0), (0, 1))], 1 << idx))
-                .map(Node::into_boxed)
+                .map(Node::boxed)
         ]
         .collect_vec();
         let circuit = Circuit::linear(nodes);
         let input = rand_vec(1 << log2_input_size, rng);
-        let outputs = iter::successors(Some(input.clone()), |input| succ(input)).collect_vec();
+        let values = iter::successors(Some(input.clone()), |input| succ(input)).map(box_dense_poly);
 
-        (circuit, vec![input], outputs)
+        (circuit, vec![box_dense_poly(input)], values.collect())
     }
 
     fn grand_sum_circuit<F: Field>(
         log2_input_size: usize,
         rng: impl RngCore,
-    ) -> (Circuit<F>, Vec<Vec<F>>, Vec<Vec<F>>) {
+    ) -> (
+        Circuit<F>,
+        Vec<BoxMultilinearPoly<'static, F>>,
+        Vec<BoxMultilinearPoly<'static, F>>,
+    ) {
         let succ = |input: &[_]| {
             (input.len() > 1)
                 .then(|| Vec::from_iter(input.iter().tuples().map(|(lhs, rhs)| *lhs + rhs)))
         };
 
         let nodes = chain![
-            [InputNode::new(log2_input_size, 1).into_boxed()],
+            [InputNode::new(log2_input_size, 1).boxed()],
             (0..log2_input_size)
                 .rev()
                 .map(|idx| VanillaNode::new(1, 1, vec![VanillaGate::add((0, 0), (0, 1))], 1 << idx))
-                .map(Node::into_boxed)
+                .map(Node::boxed)
         ]
         .collect_vec();
         let circuit = Circuit::linear(nodes);
         let input = rand_vec(1 << log2_input_size, rng);
-        let values = iter::successors(Some(input.clone()), |input| succ(input)).collect_vec();
+        let values = iter::successors(Some(input.clone()), |input| succ(input)).map(box_dense_poly);
 
-        (circuit, vec![input], values)
+        (circuit, vec![box_dense_poly(input)], values.collect())
     }
 
     fn rand_linear_circuit<F: Field>(
         mut rng: impl RngCore,
-    ) -> (Circuit<F>, Vec<Vec<F>>, Vec<Vec<F>>) {
+    ) -> (Circuit<F>, Vec<BoxMultilinearPoly<'static, F>>) {
         let num_nodes = rand_range(2..=16, &mut rng);
         let log2_sizes = iter::repeat_with(|| rand_range(1..=16, &mut rng))
             .take(num_nodes)
             .collect_vec();
         let nodes = chain![
-            [InputNode::new(log2_sizes[0], 1).into_boxed()],
+            [InputNode::new(log2_sizes[0], 1).boxed()],
             log2_sizes
                 .iter()
                 .tuple_windows()
                 .map(|(log2_input_size, log2_output_size)| {
-                    VanillaNode::rand(1, *log2_input_size, *log2_output_size, &mut rng).into_boxed()
+                    VanillaNode::rand(1, *log2_input_size, *log2_output_size, &mut rng).boxed()
                 })
         ]
         .collect_vec();
         let circuit = Circuit::linear(nodes);
         let input = rand_vec(1 << log2_sizes[0], rng);
-        let values = circuit.evaluate(vec![input.clone()]);
 
-        (circuit, vec![input], values)
+        (circuit, vec![box_dense_poly(input)])
     }
 
-    fn rand_dag_circuit<F: Field>(mut rng: impl RngCore) -> (Circuit<F>, Vec<Vec<F>>, Vec<Vec<F>>) {
+    fn rand_dag_circuit<F: Field>(
+        mut rng: impl RngCore,
+    ) -> (Circuit<F>, Vec<BoxMultilinearPoly<'static, F>>) {
         let num_nodes = rand_range(2..=16, &mut rng);
         let log2_size = rand_range(1..=16, &mut rng);
         let input_arities = (1..num_nodes)
             .map(|idx| rand_range(1..=idx, &mut rng))
             .collect_vec();
         let nodes = chain![
-            [InputNode::new(log2_size, 1).into_boxed()],
+            [InputNode::new(log2_size, 1).boxed()],
             input_arities.iter().map(|input_arity| {
-                VanillaNode::rand(*input_arity, log2_size, log2_size, &mut rng).into_boxed()
+                VanillaNode::rand(*input_arity, log2_size, log2_size, &mut rng).boxed()
             })
         ]
         .collect_vec();
@@ -765,7 +780,7 @@ pub mod test {
             izip!(1.., &nodes[1..], &input_arities).for_each(|(idx, to, input_arity)| {
                 rand_unique(*input_arity, |rng| rand_range(0..idx, rng), &mut rng)
                     .into_iter()
-                    .for_each(|from| circuit.link(nodes[from], *to))
+                    .for_each(|from| circuit.connect(nodes[from], *to))
             });
             assert_eq!(
                 circuit.indegs().skip(1).collect_vec(),
@@ -774,8 +789,7 @@ pub mod test {
             circuit
         };
         let input = rand_vec(1 << log2_size, rng);
-        let values = circuit.evaluate(vec![input.clone()]);
 
-        (circuit, vec![input], values)
+        (circuit, vec![box_dense_poly(input)])
     }
 }

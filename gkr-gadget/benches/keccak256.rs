@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use gkr::{
     circuit::{node::EvalClaim, Circuit},
-    poly::evaluate,
+    poly::{BoxMultilinearPoly, MultilinearPoly},
     prove_gkr,
     transcript::StdRngTranscript,
     util::{
@@ -9,10 +9,14 @@ use gkr::{
         dev::{rand_bytes, rand_vec, seeded_std_rng},
     },
 };
-use gkr_gadget::hash::keccak::dev::{keccak_circuit, keccak_circuit_inputs};
+use gkr_gadget::hash::keccak::{dev::keccak_circuit, Keccak};
 use halo2_curves::bn256::Fr;
 
-fn run_gkr<F: PrimeField>(circuit: &Circuit<F>, values: &[Vec<F>], output_claims: &[EvalClaim<F>]) {
+fn run_gkr<F: PrimeField>(
+    circuit: &Circuit<F>,
+    values: &[BoxMultilinearPoly<F>],
+    output_claims: &[EvalClaim<F>],
+) {
     let mut transcript = StdRngTranscript::<Vec<_>>::default();
     prove_gkr(circuit, values, output_claims, &mut transcript).unwrap();
 }
@@ -20,15 +24,13 @@ fn run_gkr<F: PrimeField>(circuit: &Circuit<F>, values: &[Vec<F>], output_claims
 fn keccak256(c: &mut Criterion) {
     let setup = |num_reps: usize| {
         let mut rng = seeded_std_rng();
-        let circuit = keccak_circuit(256, num_reps);
-        let values = {
-            let input = rand_bytes(num_reps * 136 - 1, &mut rng);
-            circuit.evaluate(keccak_circuit_inputs(256, num_reps, &input))
-        };
+        let keccak = Keccak::new(256, num_reps);
+        let input = rand_bytes(num_reps * keccak.rate() - 1, &mut rng);
+        let (circuit, values) = keccak_circuit(keccak, &input);
         let output_claims = {
             let output = values.last().unwrap();
             let point = rand_vec(output.len().ilog2() as usize, &mut rng);
-            let value = evaluate(output, &point);
+            let value = output.evaluate(&point);
             vec![EvalClaim::new(point, value)]
         };
         (circuit, values, output_claims)

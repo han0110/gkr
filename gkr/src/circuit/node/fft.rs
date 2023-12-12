@@ -4,7 +4,10 @@
 
 use crate::{
     circuit::node::{CombinedEvalClaim, EvalClaim, Node},
-    poly::{eq_eval, eq_poly, evaluate, MultilinearPoly},
+    poly::{
+        box_dense_poly, eq_eval, eq_poly, evaluate, repeated_dense_poly, BoxMultilinearPoly,
+        DynMultilinearPoly,
+    },
     sum_check::{
         err_unmatched_evaluation, generic::Generic, prove_sum_check, quadratic::Quadratic,
         verify_sum_check,
@@ -42,24 +45,27 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
         self.log2_size
     }
 
-    fn evaluate(&self, inputs: Vec<&Vec<F>>) -> Vec<F> {
+    fn evaluate(&self, inputs: Vec<&DynMultilinearPoly<F>>) -> BoxMultilinearPoly<'static, F> {
         assert_eq!(inputs.len(), 1, "Unimplemented");
 
         let input = inputs[0];
         assert_eq!(input.len(), self.input_size());
 
-        let mut values = inputs[0].clone();
-        fft(&mut values, self.omega, self.log2_size as u32);
+        let mut value = input
+            .as_dense()
+            .map(|input| input.to_vec())
+            .unwrap_or_else(|| (0..input.len()).into_par_iter().map(|b| input[b]).collect());
+        fft(&mut value, self.omega, self.log2_size as u32);
         if let Some(n_inv) = self.n_inv {
-            values.par_iter_mut().for_each(|value| *value *= n_inv);
+            value.par_iter_mut().for_each(|value| *value *= n_inv);
         }
-        values
+        box_dense_poly(value)
     }
 
-    fn prove_claim_reduction(
+    fn prove_claim_reduction<'a>(
         &self,
         claim: CombinedEvalClaim<F>,
-        inputs: Vec<&Vec<F>>,
+        inputs: Vec<&DynMultilinearPoly<F>>,
         transcript: &mut dyn TranscriptWrite<F>,
     ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
         assert_eq!(inputs.len(), 1, "Unimplemented");
@@ -73,9 +79,8 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
             .unzip::<_, _, Vec<_>, Vec<_>>();
 
         let (r_x, input_r_x, w_r_xs) = {
-            let input = inputs[0].clone();
-            let w = ws.par_iter().cloned().hada_sum();
-            let polys = [input, w].map(MultilinearPoly::new);
+            let w = box_dense_poly(ws.par_iter().cloned().hada_sum());
+            let polys = [inputs[0], &w];
             let (_, r_x, evals) =
                 prove_sum_check(&Quadratic, self.log2_size, claim.value, polys, transcript)?;
             let w_r_xs = ws.iter().map(|w| evaluate(w, &r_x)).collect_vec();
@@ -142,12 +147,9 @@ impl<F: PrimeField> FftNode<F> {
         for (idx, r_g_i) in izip!(0..r_g.len(), r_g.iter()).rev() {
             let one_minus_r_g_i = F::ONE - r_g_i;
             let last = bufs.last().unwrap();
-            let buf = izip_par!(
-                chain_par![last, last],
-                self.omegas.par_iter().step_by(1 << idx)
-            )
-            .map(|(last, omega)| (one_minus_r_g_i + *r_g_i * omega) * last)
-            .collect();
+            let buf = izip_par!(chain_par![last, last], self.omegas(idx))
+                .map(|(last, omega)| (one_minus_r_g_i + *r_g_i * omega) * last)
+                .collect();
             bufs.push(buf);
         }
         bufs
@@ -155,6 +157,10 @@ impl<F: PrimeField> FftNode<F> {
 
     fn final_eval(&self, claim: &CombinedEvalClaim<F>, input_r_x: F, w_r_xs: &[F]) -> F {
         input_r_x * inner_product::<F>(&claim.alphas, w_r_xs)
+    }
+
+    fn omegas(&self, log2_step: usize) -> impl IndexedParallelIterator<Item = &F> {
+        self.omegas.par_iter().step_by(1 << log2_step)
     }
 
     fn prove_wiring_eval(
@@ -173,15 +179,14 @@ impl<F: PrimeField> FftNode<F> {
             let (claim, g) = self.wiring_sum_check_predicate(r_gs, &claims, layer, transcript);
             let polys = {
                 let eq_r_x = eq_poly(&r_x, F::ONE);
-                let omegas =
-                    Vec::from_par_iter(self.omegas.par_iter().step_by(1 << layer).copied());
-                let w_interms = w_interms.iter().map(|w_interms| {
-                    let w = w_interms.iter().nth_back(layer).unwrap();
-                    chain![w, w].copied().collect_vec()
-                });
-                chain![[eq_r_x.into(), omegas], w_interms].map(MultilinearPoly::new)
+                let omegas = self.omegas(layer).copied().collect();
+                let w_interms = w_interms
+                    .iter()
+                    .map(|w_interms| w_interms.iter().nth_back(layer).unwrap())
+                    .map(|w| repeated_dense_poly(w, 1));
+                chain![[eq_r_x, omegas].map(box_dense_poly), w_interms].collect_vec()
             };
-            let (_, r_x_prime, evals) = prove_sum_check(&g, r_x.len(), claim, polys, transcript)?;
+            let (_, r_x_prime, evals) = prove_sum_check(&g, r_x.len(), claim, &polys, transcript)?;
             let w_interm_r_x_primes = evals[2..].to_vec();
             if layer == self.log2_size - 1 {
                 break;
@@ -318,6 +323,7 @@ mod test {
             Circuit,
         },
         dev::run_gkr,
+        poly::{box_dense_poly, test::assert_polys_eq, BoxMultilinearPoly},
         util::{
             arithmetic::{fft, PrimeField},
             dev::{rand_vec, seeded_std_rng},
@@ -332,18 +338,22 @@ mod test {
         for log2_input_size in 1..16 {
             let (circuit, inputs, values) = fft_and_then_ifft_circuit(log2_input_size, &mut rng);
             run_gkr::<Fr>(&circuit, &inputs, &mut rng);
-            assert_eq!(circuit.evaluate(inputs), values);
+            assert_polys_eq(&circuit.evaluate(inputs), &values);
         }
     }
 
     pub fn fft_and_then_ifft_circuit<F: PrimeField>(
         log2_input_size: usize,
         rng: impl RngCore,
-    ) -> (Circuit<F>, Vec<Vec<F>>, Vec<Vec<F>>) {
+    ) -> (
+        Circuit<F>,
+        Vec<BoxMultilinearPoly<'static, F>>,
+        Vec<BoxMultilinearPoly<'static, F>>,
+    ) {
         let nodes = vec![
-            InputNode::new(log2_input_size, 1).into_boxed(),
-            FftNode::forward(log2_input_size).into_boxed(),
-            FftNode::inverse(log2_input_size).into_boxed(),
+            InputNode::new(log2_input_size, 1).boxed(),
+            FftNode::forward(log2_input_size).boxed(),
+            FftNode::inverse(log2_input_size).boxed(),
         ];
         let circuit = Circuit::linear(nodes);
         let input = rand_vec(1 << log2_input_size, rng);
@@ -354,6 +364,10 @@ mod test {
             buf
         };
         let values = vec![input.clone(), input_prime, input.clone()];
-        (circuit, vec![input], values)
+        (
+            circuit,
+            vec![box_dense_poly(input)],
+            values.into_iter().map(box_dense_poly).collect(),
+        )
     }
 }

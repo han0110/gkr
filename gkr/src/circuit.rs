@@ -1,8 +1,9 @@
 use crate::{
     circuit::{dag::DirectedAcyclicGraph, node::Node},
+    poly::BoxMultilinearPoly,
     util::{arithmetic::Field, izip_eq, Itertools},
 };
-use std::ops::Deref;
+use std::{iter, ops::Deref};
 
 mod dag;
 pub mod node;
@@ -23,31 +24,34 @@ impl<F: Field> Circuit<F> {
     }
 
     pub fn insert(&mut self, node: impl Node<F> + 'static) -> NodeId {
-        let node = node.into_boxed();
-        self.dag.insert(node)
+        self.dag.insert(node.boxed())
     }
 
-    pub fn link(&mut self, from: NodeId, to: NodeId) {
+    pub fn connect(&mut self, from: NodeId, to: NodeId) {
         assert_eq!(
             self.nodes()[from.0].log2_output_size(),
             self.nodes()[to.0].log2_input_size()
         );
         assert!(!self.nodes()[to.0].is_input());
-        self.dag.link(from, to);
+        self.dag.connect(from, to);
         self.topo = self.dag.topo();
     }
 
-    pub fn evaluate(&self, inputs: Vec<Vec<F>>) -> Vec<Vec<F>> {
-        let mut values = vec![Vec::new(); self.nodes().len()];
+    pub fn evaluate<'a>(
+        &self,
+        inputs: Vec<BoxMultilinearPoly<'a, F>>,
+    ) -> Vec<BoxMultilinearPoly<'a, F>> {
+        let mut values = Vec::from_iter(iter::repeat_with(|| None).take(self.nodes().len()));
 
-        izip_eq!(self.dag.inputs(), inputs).for_each(|(idx, input)| values[idx] = input);
+        izip_eq!(self.inputs(), inputs).for_each(|(idx, input)| values[idx] = input.into());
         self.topo_iter()
             .filter(|(_, node)| !node.is_input())
             .for_each(|(idx, node)| {
-                values[idx] = node.evaluate(self.dag.predec(idx).map(|idx| &values[idx]).collect())
+                let inputs = self.predec(idx).map(|i| values[i].as_deref().unwrap());
+                values[idx] = node.evaluate(inputs.collect()).into()
             });
 
-        values
+        values.into_iter().map(Option::unwrap).collect()
     }
 
     pub(crate) fn topo_iter(&self) -> impl DoubleEndedIterator<Item = (usize, &dyn Node<F>)> {
@@ -62,3 +66,15 @@ impl<F> Deref for Circuit<F> {
         &self.dag
     }
 }
+
+#[macro_export]
+macro_rules! connect {
+    ($circuit:ident { $($to:ident <- $($from:ident),*);*$(;)? }) => {
+        $($($circuit.connect($from, $to);)*)*
+    };
+    ($circuit:ident { $($($from:ident),* -> $to:ident);*$(;)? }) => {
+        $($($circuit.connect($from, $to);)*)*
+    };
+}
+
+pub use connect;
