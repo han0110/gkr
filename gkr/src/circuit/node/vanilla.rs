@@ -205,10 +205,6 @@ impl<F: Field> VanillaNode<F> {
         self.log2_reps
     }
 
-    fn num_reps(&self) -> usize {
-        1 << self.log2_reps
-    }
-
     fn eq_r_gs(&self, r_gs: &[Vec<F>], alphas: &[F]) -> Vec<PartialEqPoly<F>> {
         izip_par!(r_gs, alphas)
             .map(|(r_g, alpha)| PartialEqPoly::new(r_g, self.log2_sub_output_size, *alpha))
@@ -289,12 +285,12 @@ impl<F: Field> VanillaNode<F> {
             )
         };
         let wiring = |exprs: &Vec<Vec<_>>| {
-            Vec::from_par_iter((0..self.num_reps()).into_par_iter().flat_map(|rep| {
-                let evaluate = move |expr| evaluate(expr, rep);
-                exprs
-                    .par_iter()
-                    .with_min_len(64)
-                    .map(move |exprs| exprs.par_iter().with_min_len(64).map(evaluate).sum())
+            let log2_sub_input_size = self.log2_sub_input_size();
+            let sub_input_mask = (1 << log2_sub_input_size) - 1;
+            Vec::from_par_iter((0..self.input_size()).into_par_iter().map(|b| {
+                let evaluate = move |expr| evaluate(expr, b >> log2_sub_input_size);
+                let exprs = &exprs[b & sub_input_mask];
+                exprs.par_iter().with_min_len(64).map(evaluate).sum()
             }))
         };
         self.wirings[phase]
