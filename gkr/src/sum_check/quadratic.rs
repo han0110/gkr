@@ -39,10 +39,10 @@ impl<F: Field> SumCheckFunction<F> for Quadratic {
                     .into_par_iter()
                     .step_by(2)
                     .with_min_len(64)
-                    .fold_with(AdditiveArray::default(), |mut coeffs, idx| {
-                        coeffs[0] += a[idx] * b[idx];
-                        coeffs[1] += (a[idx + 1] - a[idx]) * (b[idx + 1] - b[idx]);
-                        coeffs
+                    .map(|idx| {
+                        let coeff_0 = a[idx] * b[idx];
+                        let coeff_2 = (a[idx + 1] - a[idx]) * (b[idx + 1] - b[idx]);
+                        AdditiveArray([coeff_0, coeff_2])
                     })
             })
             .sum();
