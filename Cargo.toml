@@ -6,12 +6,13 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-halo2_curves = { git = "http://github.com/privacy-scaling-explorations/halo2curves", package = "halo2curves" }
 rayon = "1.8.0"
 itertools = "0.11.0"
 rand_core = "0.6.4"
 rand_chacha = "0.3.1"
+halo2_curves = { version = "0.6.0", package = "halo2curves" }
 
 # dev
 rand = "0.8.5"
 criterion = "0.5.1"
+goldilocks = { git = "https://github.com/zhenfeizhang/Goldilocks", rev = "bffec3f" }
