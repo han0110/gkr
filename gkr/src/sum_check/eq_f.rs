@@ -1,3 +1,8 @@
+//! Application of section 3.2 of [Some Improvements for the PIOP for ZeroCheck] on qudratic
+//! SumCheck when one of multiplicand is eq polynomial.
+//!
+//! [Some Improvements for the PIOP for ZeroCheck]: https://eprint.iacr.org/2024/108
+
 use crate::{
     poly::MultilinearPoly,
     sum_check::SumCheckFunction,
