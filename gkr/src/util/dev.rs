@@ -5,13 +5,21 @@ use rand::{
     rngs::{OsRng, StdRng},
     CryptoRng, Rng, RngCore, SeedableRng,
 };
-use std::{array, hash::Hash, iter};
+use std::{any::type_name, array, hash::Hash, iter};
 
-pub fn std_rng() -> impl RngCore + CryptoRng {
+pub fn field_name<F: Field>() -> &'static str {
+    match type_name::<F>() {
+        "halo2curves::bn256::fr::Fr" => "bn254",
+        "goldilocks::fp2::GoldilocksExt2" => "goldilock_qe",
+        _ => unimplemented!(),
+    }
+}
+
+pub fn std_rng() -> impl RngCore + CryptoRng + Clone {
     StdRng::from_seed(Default::default())
 }
 
-pub fn seeded_std_rng() -> impl RngCore + CryptoRng {
+pub fn seeded_std_rng() -> impl RngCore + CryptoRng + Clone {
     StdRng::seed_from_u64(OsRng.next_u64())
 }
 

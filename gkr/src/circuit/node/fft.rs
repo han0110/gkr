@@ -79,10 +79,10 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
             .unzip::<_, _, Vec<_>, Vec<_>>();
 
         let (r_x, input_r_x, w_r_xs) = {
+            let g = Quadratic::new(self.log2_size);
             let w = box_dense_poly(ws.par_iter().cloned().hada_sum());
             let polys = [inputs[0], &w];
-            let (_, r_x, evals) =
-                prove_sum_check(&Quadratic, self.log2_size, claim.value, polys, transcript)?;
+            let (_, r_x, evals) = prove_sum_check(&g, claim.value, polys, transcript)?;
             let w_r_xs = ws.iter().map(|w| evaluate(w, &r_x)).collect_vec();
             transcript.write_felt(&evals[0])?;
             transcript.write_felts(&w_r_xs)?;
@@ -100,8 +100,8 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
         transcript: &mut dyn TranscriptRead<F>,
     ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
         let (r_x, input_r_x, w_r_xs) = {
-            let (sub_claim, r_x) =
-                verify_sum_check(&Quadratic, self.log2_size, claim.value, transcript)?;
+            let g = Quadratic::new(self.log2_size);
+            let (sub_claim, r_x) = verify_sum_check(&g, claim.value, transcript)?;
             let input_r_x = transcript.read_felt()?;
             let w_r_xs = transcript.read_felts(claim.points.len())?;
             if sub_claim != self.final_eval(&claim, input_r_x, &w_r_xs) {
@@ -186,7 +186,7 @@ impl<F: PrimeField> FftNode<F> {
                     .map(|w| repeated_dense_poly(w, 1));
                 chain![[eq_r_x, omegas].map(box_dense_poly), w_interms].collect_vec()
             };
-            let (_, r_x_prime, evals) = prove_sum_check(&g, r_x.len(), claim, &polys, transcript)?;
+            let (_, r_x_prime, evals) = prove_sum_check(&g, claim, &polys, transcript)?;
             let w_interm_r_x_primes = evals[2..].to_vec();
             if layer == self.log2_size - 1 {
                 break;
@@ -213,7 +213,7 @@ impl<F: PrimeField> FftNode<F> {
         let mut r_x = r_x.to_vec();
         for layer in 0..self.log2_size {
             let (claim, g) = self.wiring_sum_check_predicate(r_gs, &claims, layer, transcript);
-            let (sub_claim, r_x_prime) = verify_sum_check(&g, r_x.len(), claim, transcript)?;
+            let (sub_claim, r_x_prime) = verify_sum_check(&g, claim, transcript)?;
             let w_interm_r_x_primes = if layer == self.log2_size - 1 {
                 self.wiring_gkr_initial_evals(alphas)
             } else {
@@ -260,7 +260,7 @@ impl<F: PrimeField> FftNode<F> {
             eq_r_x * Expression::distribute_powers(expands, beta)
         };
 
-        (claim, Generic::new(&expression))
+        (claim, Generic::new(r_gs[0].len() - layer, &expression))
     }
 
     fn wiring_sum_check_final_eval(

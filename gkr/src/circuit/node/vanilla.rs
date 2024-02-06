@@ -88,11 +88,12 @@ impl<F: Field> Node<F> for VanillaNode<F> {
         let mut input_r_xs = Vec::new();
         for (phase, indices) in izip!(0.., &self.inputs) {
             let (subclaim, r_x_i, evals) = {
+                let g = Quadratic::new(self.log2_input_size());
                 let claim = claim - self.sum_check_eval(&eq_r_gs, &eq_r_xs, &input_r_xs);
                 let (wiring, inputs) =
                     self.sum_check_polys(&inputs, &eq_r_g_prime, &eq_r_xs, &input_r_xs);
                 let polys = chain![wiring.iter().map(AsRef::as_ref), inputs];
-                prove_sum_check(&Quadratic, self.log2_input_size(), claim, polys, transcript)?
+                prove_sum_check(&g, claim, polys, transcript)?
             };
             let input_r_x_is = evals.into_iter().skip(indices.len()).collect_vec();
             transcript.write_felts(&input_r_x_is)?;
@@ -122,8 +123,9 @@ impl<F: Field> Node<F> for VanillaNode<F> {
         let mut input_r_xs = Vec::new();
         for (phase, indices) in izip!(0.., &self.inputs) {
             let (subclaim, r_x_i) = {
+                let g = Quadratic::new(self.log2_input_size());
                 let claim = claim - self.sum_check_eval(&eq_r_gs, &eq_r_xs, &input_r_xs);
-                verify_sum_check(&Quadratic, self.log2_input_size(), claim, transcript)?
+                verify_sum_check(&g, claim, transcript)?
             };
             let input_r_x_is = transcript.read_felts(indices.len())?;
 

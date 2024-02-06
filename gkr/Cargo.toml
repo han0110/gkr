@@ -13,8 +13,20 @@ rand = { workspace = true, optional = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+criterion = { workspace = true }
+goldilocks = { workspace = true }
 
 [features]
 default = []
 dev = ["dep:rand"]
 sanity-check = []
+
+[[bench]]
+name = "sum_check"
+harness = false
+required-features = ["dev"]
+
+[[bench]]
+name = "component"
+harness = false
+required-features = ["dev"]

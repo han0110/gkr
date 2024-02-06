@@ -37,22 +37,22 @@ impl<F: Field> PartialEqPoly<F> {
     }
 }
 
-pub fn eq_poly<F: Field>(y: &[F], scalar: F) -> Vec<F> {
-    eq_expand(&[scalar], y)
+pub fn eq_poly<F: Field>(r: &[F], scalar: F) -> Vec<F> {
+    eq_expand(&[scalar], r)
 }
 
-pub fn eq_expand<F: Field>(poly: &[F], y: &[F]) -> Vec<F> {
+pub fn eq_expand<F: Field>(poly: &[F], r: &[F]) -> Vec<F> {
     assert!(poly.len().is_power_of_two());
 
     let poly_num_vars = poly.len().ilog2() as usize;
-    let num_vars = poly_num_vars + y.len();
+    let num_vars = poly_num_vars + r.len();
     let lo_num_vars = div_ceil(num_vars, 2).max(poly_num_vars);
 
     let (lo, hi) = if poly_num_vars >= lo_num_vars {
-        let hi = eq_expand_serial(&[F::ONE], y);
+        let hi = eq_expand_serial(&[F::ONE], r);
         (Cow::Borrowed(poly), hi)
     } else {
-        let (lo, hi) = y.split_at(lo_num_vars - poly_num_vars);
+        let (lo, hi) = r.split_at(lo_num_vars - poly_num_vars);
         rayon::join(
             || eq_expand_serial(poly, lo).into(),
             || eq_expand_serial(&[F::ONE], hi),
@@ -66,13 +66,13 @@ pub fn eq_expand<F: Field>(poly: &[F], y: &[F]) -> Vec<F> {
         .collect()
 }
 
-fn eq_expand_serial<F: Field>(poly: &[F], y: &[F]) -> Vec<F> {
-    y.iter()
-        .fold(Cow::Borrowed(poly), |poly, y_i| {
-            let one_minus_y_i = F::ONE - y_i;
+fn eq_expand_serial<F: Field>(poly: &[F], r: &[F]) -> Vec<F> {
+    r.iter()
+        .fold(Cow::Borrowed(poly), |poly, r_i| {
+            let one_minus_r_i = F::ONE - r_i;
             chain![
-                poly.iter().map(|eval| *eval * one_minus_y_i),
-                poly.iter().map(|eval| *eval * y_i),
+                poly.iter().map(|eval| *eval * one_minus_r_i),
+                poly.iter().map(|eval| *eval * r_i),
             ]
             .collect::<Vec<_>>()
             .into()

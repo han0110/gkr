@@ -3,7 +3,7 @@ use crate::{
     sum_check::SumCheckFunction,
     transcript::{TranscriptRead, TranscriptWrite},
     util::{
-        arithmetic::{inner_product, Field, PrimeField},
+        arithmetic::{inner_product, vander_mat_inv, Field, PrimeField},
         chain,
         collection::AdditiveVec,
         expression::{Expression, ExpressionRegistry},
@@ -12,10 +12,11 @@ use crate::{
     Error,
 };
 use rayon::prelude::*;
-use std::{fmt::Debug, mem};
+use std::fmt::Debug;
 
 #[derive(Clone, Debug)]
 pub struct Generic<F: Field> {
+    num_vars: usize,
     expression: Expression<F, usize>,
     registry: ExpressionRegistry<F, usize>,
     degree: usize,
@@ -23,6 +24,10 @@ pub struct Generic<F: Field> {
 }
 
 impl<F: Field> SumCheckFunction<F> for Generic<F> {
+    fn num_vars(&self) -> usize {
+        self.num_vars
+    }
+
     fn degree(&self) -> usize {
         self.degree
     }
@@ -95,6 +100,7 @@ impl<F: Field> SumCheckFunction<F> for Generic<F> {
 
     fn write_sum(
         &self,
+        _: usize,
         sum: &[F],
         transcript: &mut (impl TranscriptWrite<F> + ?Sized),
     ) -> Result<(), Error> {
@@ -105,6 +111,7 @@ impl<F: Field> SumCheckFunction<F> for Generic<F> {
 
     fn read_sum(
         &self,
+        _: usize,
         claim: F,
         transcript: &mut (impl TranscriptRead<F> + ?Sized),
     ) -> Result<Vec<F>, Error> {
@@ -117,12 +124,13 @@ impl<F: Field> SumCheckFunction<F> for Generic<F> {
 }
 
 impl<F: PrimeField> Generic<F> {
-    pub fn new(expression: &Expression<F, usize>) -> Self {
+    pub fn new(num_vars: usize, expression: &Expression<F, usize>) -> Self {
         let registry = ExpressionRegistry::new(expression);
         let degree = expression.degree();
         assert!(degree >= 2);
         let vander_mat_inv = vander_mat_inv((0..).map(F::from).take(degree + 1).collect());
         Self {
+            num_vars,
             expression: expression.clone(),
             registry,
             degree,
@@ -133,32 +141,4 @@ impl<F: PrimeField> Generic<F> {
     pub fn expression(&self) -> &Expression<F, usize> {
         &self.expression
     }
-}
-
-fn vander_mat_inv<F: Field>(points: Vec<F>) -> Vec<Vec<F>> {
-    let poly_from_roots = |roots: &[F], scalar: F| {
-        let mut poly = vec![F::ZERO; roots.len() + 1];
-        *poly.last_mut().unwrap() = scalar;
-        izip!(2.., roots).for_each(|(len, root)| {
-            let mut buf = scalar;
-            (0..poly.len() - 1).rev().take(len).for_each(|idx| {
-                buf = poly[idx] - buf * root;
-                mem::swap(&mut buf, &mut poly[idx])
-            })
-        });
-        poly
-    };
-
-    let mut mat = vec![vec![F::ZERO; points.len()]; points.len()];
-    izip!(0.., &points).for_each(|(j, point_j)| {
-        let point_is = izip!(0.., &points)
-            .filter(|(i, _)| *i != j)
-            .map(|(_, point_i)| *point_i)
-            .collect_vec();
-        let scalar = F::product(point_is.iter().map(|point_i| *point_j - point_i))
-            .invert()
-            .unwrap();
-        izip!(&mut mat, poly_from_roots(&point_is, scalar)).for_each(|(row, coeff)| row[j] = coeff)
-    });
-    mat
 }
