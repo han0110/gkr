@@ -8,9 +8,21 @@ use crate::{
 use rayon::prelude::*;
 
 #[derive(Debug)]
-pub struct Quadratic;
+pub struct Quadratic {
+    num_vars: usize,
+}
+
+impl Quadratic {
+    pub fn new(num_vars: usize) -> Self {
+        Self { num_vars }
+    }
+}
 
 impl<F: Field> SumCheckFunction<F> for Quadratic {
+    fn num_vars(&self) -> usize {
+        self.num_vars
+    }
+
     fn degree(&self) -> usize {
         2
     }
@@ -52,6 +64,7 @@ impl<F: Field> SumCheckFunction<F> for Quadratic {
 
     fn write_sum(
         &self,
+        _: usize,
         sum: &[F],
         transcript: &mut (impl TranscriptWrite<F> + ?Sized),
     ) -> Result<(), Error> {
@@ -62,6 +75,7 @@ impl<F: Field> SumCheckFunction<F> for Quadratic {
 
     fn read_sum(
         &self,
+        _: usize,
         claim: F,
         transcript: &mut (impl TranscriptRead<F> + ?Sized),
     ) -> Result<Vec<F>, Error> {
