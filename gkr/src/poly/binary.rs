@@ -1,6 +1,6 @@
 use crate::{
     poly::{BoxMultilinearPoly, BoxMultilinearPolyOwned, DenseMultilinearPoly, MultilinearPoly},
-    util::arithmetic::Field,
+    util::arithmetic::{ExtensionField, Field},
 };
 use rayon::prelude::*;
 use std::{fmt::Debug, ops::Index};
@@ -51,8 +51,8 @@ impl<F: Field> Index<usize> for BinaryMultilinearPoly<F> {
     }
 }
 
-impl<F: Field> MultilinearPoly<F> for BinaryMultilinearPoly<F> {
-    fn clone_box(&self) -> BoxMultilinearPoly<F> {
+impl<F: Field, E: ExtensionField<F>> MultilinearPoly<F, E> for BinaryMultilinearPoly<F> {
+    fn clone_box(&self) -> BoxMultilinearPoly<F, E> {
         Box::new(self.clone())
     }
 
@@ -60,8 +60,8 @@ impl<F: Field> MultilinearPoly<F> for BinaryMultilinearPoly<F> {
         self.num_vars
     }
 
-    fn fix_var(&self, x_i: &F) -> BoxMultilinearPolyOwned<'static, F> {
-        let table = [F::ZERO, F::ONE - x_i, *x_i, F::ONE];
+    fn fix_var(&self, x_i: &E) -> BoxMultilinearPolyOwned<'static, E> {
+        let table = [E::ZERO, E::ONE - x_i, *x_i, E::ONE];
         let evals = (0..1 << self.num_vars)
             .into_par_iter()
             .step_by(2)
@@ -71,7 +71,7 @@ impl<F: Field> MultilinearPoly<F> for BinaryMultilinearPoly<F> {
         DenseMultilinearPoly::new(evals).box_owned()
     }
 
-    fn evaluate(&self, x: &[F]) -> F {
+    fn evaluate(&self, x: &[E]) -> E {
         assert_eq!(x.len(), self.num_vars);
 
         self.fix_var(&x[0]).evaluate(&x[1..])

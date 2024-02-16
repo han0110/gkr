@@ -4,6 +4,7 @@ use gkr::{
         node::{InputNode, Node, VanillaGate, VanillaNode},
         Circuit, NodeId,
     },
+    ff_ext::ExtensionField,
     util::{arithmetic::Field, chain, izip},
 };
 use std::iter;
@@ -52,16 +53,22 @@ impl Keccak {
         self.perm.log2_size()
     }
 
-    pub fn alloc_state<F: Field>(&self, circuit: &mut Circuit<F>) -> NodeId {
+    pub fn alloc_state<F: Field, E: ExtensionField<F>>(
+        &self,
+        circuit: &mut Circuit<F, E>,
+    ) -> NodeId {
         circuit.insert(InputNode::new(Self::LOG2_STATE_SIZE, self.perm.num_reps))
     }
-    pub fn alloc_input<F: Field>(&self, circuit: &mut Circuit<F>) -> NodeId {
+    pub fn alloc_input<F: Field, E: ExtensionField<F>>(
+        &self,
+        circuit: &mut Circuit<F, E>,
+    ) -> NodeId {
         circuit.insert(InputNode::new(Self::LOG2_STATE_SIZE, self.perm.num_reps))
     }
 
-    pub fn configure<F: Field>(
+    pub fn configure<F: Field, E: ExtensionField<F>>(
         &self,
-        circuit: &mut Circuit<F>,
+        circuit: &mut Circuit<F, E>,
         state: NodeId,
         input: NodeId,
     ) -> NodeId {
@@ -126,7 +133,11 @@ impl KeccakPerm {
         Self::LOG2_STATE_SIZE + self.log2_reps
     }
 
-    pub fn configure<F: Field>(&self, circuit: &mut Circuit<F>, state: NodeId) -> NodeId {
+    pub fn configure<F: Field, E: ExtensionField<F>>(
+        &self,
+        circuit: &mut Circuit<F, E>,
+        state: NodeId,
+    ) -> NodeId {
         assert_eq!(circuit.node(state).log2_input_size(), self.log2_size());
 
         Self::RC.into_iter().fold(state, |state, rc| {
@@ -135,7 +146,11 @@ impl KeccakPerm {
         })
     }
 
-    fn configure_theta<F: Field>(&self, circuit: &mut Circuit<F>, state: NodeId) -> NodeId {
+    fn configure_theta<F: Field, E: ExtensionField<F>>(
+        &self,
+        circuit: &mut Circuit<F, E>,
+        state: NodeId,
+    ) -> NodeId {
         let n_1 = {
             let gates = [
                 (0, 5),
@@ -215,9 +230,9 @@ impl KeccakPerm {
         n_6
     }
 
-    fn configure_rho_pi_chi_iota<F: Field>(
+    fn configure_rho_pi_chi_iota<F: Field, E: ExtensionField<F>>(
         &self,
-        circuit: &mut Circuit<F>,
+        circuit: &mut Circuit<F, E>,
         state: NodeId,
         rc: u64,
     ) -> NodeId {
@@ -372,6 +387,7 @@ pub mod dev {
     use crate::hash::keccak::Keccak;
     use gkr::{
         circuit::Circuit,
+        ff_ext::ExtensionField,
         poly::{BinaryMultilinearPoly, BoxMultilinearPoly, MultilinearPoly},
         util::{
             arithmetic::{try_felt_to_bool, Field},
@@ -380,10 +396,10 @@ pub mod dev {
     };
     use std::iter;
 
-    pub fn keccak_circuit<F: Field>(
+    pub fn keccak_circuit<F: Field, E: ExtensionField<F>>(
         keccak: Keccak,
         input: &[u8],
-    ) -> (Circuit<F>, Vec<BoxMultilinearPoly<'static, F>>) {
+    ) -> (Circuit<F, E>, Vec<BoxMultilinearPoly<'static, F, E>>) {
         let circuit = {
             let mut circuit = Circuit::default();
             let state = keccak.alloc_state(&mut circuit);
@@ -397,10 +413,10 @@ pub mod dev {
         (circuit, values.collect())
     }
 
-    fn keccak_circuit_inputs<F: Field>(
+    fn keccak_circuit_inputs<F: Field, E: ExtensionField<F>>(
         keccak: Keccak,
         input: &[u8],
-    ) -> Vec<BoxMultilinearPoly<'static, F>> {
+    ) -> Vec<BoxMultilinearPoly<'static, F, E>> {
         let rate = keccak.rate();
         let inputs = chain![input.chunks(rate), [[].as_slice()]]
             .take(input.len() / rate + 1)
@@ -441,7 +457,9 @@ pub mod dev {
             .collect()
     }
 
-    fn box_binary_poly<F: Field>(poly: BoxMultilinearPoly<F>) -> BoxMultilinearPoly<F> {
+    fn box_binary_poly<F: Field, E: ExtensionField<F>>(
+        poly: BoxMultilinearPoly<F, E>,
+    ) -> BoxMultilinearPoly<F, E> {
         let words = Vec::from_iter((0..poly.len()).step_by(64).map(|offset| {
             (offset..offset + 64)
                 .rev()
@@ -463,6 +481,7 @@ pub mod test {
     use crate::hash::keccak::{dev::keccak_circuit, Keccak};
     use gkr::{
         dev::run_gkr_with_values,
+        ff_ext::ExtensionField,
         poly::MultilinearPoly,
         util::{
             arithmetic::{try_felt_to_bool, Field, PrimeField},
@@ -470,21 +489,25 @@ pub mod test {
             RngCore,
         },
     };
-    use halo2_curves::bn256::Fr;
+    use goldilocks::{Goldilocks, GoldilocksExt2};
 
     #[test]
     fn keccak256() {
         let mut rng = seeded_std_rng();
-        for num_reps in (0..4).map(|log2| 1 << log2) {
-            run_keccak::<Fr>(256, num_reps, &mut rng);
+        for num_reps in (0..3).map(|log2| 1 << log2) {
+            run_keccak::<Goldilocks, GoldilocksExt2>(256, num_reps, &mut rng);
         }
     }
 
-    fn run_keccak<F: PrimeField>(num_bits: usize, num_reps: usize, mut rng: impl RngCore) {
+    fn run_keccak<F: PrimeField, E: ExtensionField<F>>(
+        num_bits: usize,
+        num_reps: usize,
+        mut rng: impl RngCore,
+    ) {
         let keccak = Keccak::new(num_bits, num_reps);
         let input = rand_bytes(rand_range(0..num_reps * keccak.rate(), &mut rng), &mut rng);
 
-        let (circuit, values) = keccak_circuit::<F>(keccak, &input);
+        let (circuit, values) = keccak_circuit::<F, E>(keccak, &input);
         run_gkr_with_values(&circuit, &values, &mut rng);
 
         let offset = (input.len() / keccak.rate()) << Keccak::LOG2_STATE_SIZE;
@@ -504,10 +527,10 @@ pub mod test {
         output
     }
 
-    fn extract_bytes<F: Field>(
+    fn extract_bytes<F: Field, E: ExtensionField<F>>(
         num_bits: usize,
         offset: usize,
-        output: impl MultilinearPoly<F>,
+        output: impl MultilinearPoly<F, E>,
     ) -> Vec<u8> {
         Vec::from_iter((offset..).take(num_bits).step_by(8).map(|offset| {
             (offset..offset + 8)

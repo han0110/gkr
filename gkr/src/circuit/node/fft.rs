@@ -4,17 +4,16 @@
 
 use crate::{
     circuit::node::{CombinedEvalClaim, EvalClaim, Node},
-    poly::{
-        box_dense_poly, eq_eval, eq_poly, evaluate, repeated_dense_poly, BoxMultilinearPoly,
-        DynMultilinearPoly,
-    },
+    poly::{box_dense_poly, eq_eval, eq_poly, evaluate, repeated_dense_poly, BoxMultilinearPoly},
     sum_check::{
         err_unmatched_evaluation, generic::Generic, prove_sum_check, quadratic::Quadratic,
-        verify_sum_check,
+        verify_sum_check, SumCheckPoly,
     },
     transcript::{Transcript, TranscriptRead, TranscriptWrite},
     util::{
-        arithmetic::{fft, inner_product, powers, squares, Field, PrimeField},
+        arithmetic::{
+            inner_product, powers, radix2_fft, squares, ExtensionField, Field, PrimeField,
+        },
         chain, chain_par,
         collection::Hadamard,
         expression::Expression,
@@ -23,16 +22,18 @@ use crate::{
     Error,
 };
 use rayon::prelude::*;
+use std::marker::PhantomData;
 
 #[derive(Clone, Debug)]
-pub struct FftNode<F> {
+pub struct FftNode<F, E> {
     log2_size: usize,
     omega: F,
     omegas: Vec<F>,
     n_inv: Option<F>,
+    _marker: PhantomData<E>,
 }
 
-impl<F: PrimeField> Node<F> for FftNode<F> {
+impl<F: PrimeField, E: ExtensionField<F>> Node<F, E> for FftNode<F, E> {
     fn is_input(&self) -> bool {
         false
     }
@@ -45,7 +46,10 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
         self.log2_size
     }
 
-    fn evaluate(&self, inputs: Vec<&DynMultilinearPoly<F>>) -> BoxMultilinearPoly<'static, F> {
+    fn evaluate(
+        &self,
+        inputs: Vec<&BoxMultilinearPoly<F, E>>,
+    ) -> BoxMultilinearPoly<'static, F, E> {
         assert_eq!(inputs.len(), 1, "Unimplemented");
 
         let input = inputs[0];
@@ -55,7 +59,7 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
             .as_dense()
             .map(|input| input.to_vec())
             .unwrap_or_else(|| (0..input.len()).into_par_iter().map(|b| input[b]).collect());
-        fft(&mut value, self.omega, self.log2_size as u32);
+        radix2_fft(&mut value, self.omega);
         if let Some(n_inv) = self.n_inv {
             value.par_iter_mut().for_each(|value| *value *= n_inv);
         }
@@ -64,10 +68,10 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
 
     fn prove_claim_reduction<'a>(
         &self,
-        claim: CombinedEvalClaim<F>,
-        inputs: Vec<&DynMultilinearPoly<F>>,
-        transcript: &mut dyn TranscriptWrite<F>,
-    ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
+        claim: CombinedEvalClaim<E>,
+        inputs: Vec<&BoxMultilinearPoly<F, E>>,
+        transcript: &mut dyn TranscriptWrite<F, E>,
+    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
         assert_eq!(inputs.len(), 1, "Unimplemented");
 
         let (w_interms, ws) = izip!(&claim.points, &claim.alphas)
@@ -81,11 +85,11 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
         let (r_x, input_r_x, w_r_xs) = {
             let g = Quadratic::new(self.log2_size);
             let w = box_dense_poly(ws.par_iter().cloned().hada_sum());
-            let polys = [inputs[0], &w];
+            let polys = [SumCheckPoly::Base(inputs[0]), SumCheckPoly::Extension(&w)];
             let (_, r_x, evals) = prove_sum_check(&g, claim.value, polys, transcript)?;
             let w_r_xs = ws.iter().map(|w| evaluate(w, &r_x)).collect_vec();
-            transcript.write_felt(&evals[0])?;
-            transcript.write_felts(&w_r_xs)?;
+            transcript.write_felt_ext(&evals[0])?;
+            transcript.write_felt_exts(&w_r_xs)?;
             (r_x, evals[0], w_r_xs)
         };
 
@@ -96,14 +100,14 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
 
     fn verify_claim_reduction(
         &self,
-        claim: CombinedEvalClaim<F>,
-        transcript: &mut dyn TranscriptRead<F>,
-    ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
+        claim: CombinedEvalClaim<E>,
+        transcript: &mut dyn TranscriptRead<F, E>,
+    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
         let (r_x, input_r_x, w_r_xs) = {
             let g = Quadratic::new(self.log2_size);
             let (sub_claim, r_x) = verify_sum_check(&g, claim.value, transcript)?;
-            let input_r_x = transcript.read_felt()?;
-            let w_r_xs = transcript.read_felts(claim.points.len())?;
+            let input_r_x = transcript.read_felt_ext()?;
+            let w_r_xs = transcript.read_felt_exts(claim.points.len())?;
             if sub_claim != self.final_eval(&claim, input_r_x, &w_r_xs) {
                 return Err(err_unmatched_evaluation());
             }
@@ -117,7 +121,7 @@ impl<F: PrimeField> Node<F> for FftNode<F> {
     }
 }
 
-impl<F: PrimeField> FftNode<F> {
+impl<F: PrimeField, E: ExtensionField<F>> FftNode<F, E> {
     pub fn forward(log2_size: usize) -> Self {
         let omega = root_of_unity(log2_size);
         let omegas = Vec::from_iter(powers(omega).take(1 << log2_size));
@@ -126,6 +130,7 @@ impl<F: PrimeField> FftNode<F> {
             omega,
             omegas,
             n_inv: None,
+            _marker: PhantomData,
         }
     }
 
@@ -137,15 +142,16 @@ impl<F: PrimeField> FftNode<F> {
             omega,
             omegas,
             n_inv: Some(powers(F::TWO_INV).nth(log2_size).unwrap()),
+            _marker: PhantomData,
         }
     }
 
-    fn wiring(&self, r_g: &[F], alpha: F) -> Vec<Vec<F>> {
-        let init = self.n_inv.map(|n_inv| n_inv * alpha).unwrap_or(alpha);
+    fn wiring(&self, r_g: &[E], alpha: E) -> Vec<Vec<E>> {
+        let init = self.n_inv.map(|n_inv| alpha * n_inv).unwrap_or(alpha);
         let mut bufs = Vec::with_capacity(r_g.len());
         bufs.push(vec![init]);
         for (idx, r_g_i) in izip!(0..r_g.len(), r_g.iter()).rev() {
-            let one_minus_r_g_i = F::ONE - r_g_i;
+            let one_minus_r_g_i = E::ONE - r_g_i;
             let last = bufs.last().unwrap();
             let buf = izip_par!(chain_par![last, last], self.omegas(idx))
                 .map(|(last, omega)| (one_minus_r_g_i + *r_g_i * omega) * last)
@@ -155,8 +161,8 @@ impl<F: PrimeField> FftNode<F> {
         bufs
     }
 
-    fn final_eval(&self, claim: &CombinedEvalClaim<F>, input_r_x: F, w_r_xs: &[F]) -> F {
-        input_r_x * inner_product::<F>(&claim.alphas, w_r_xs)
+    fn final_eval(&self, claim: &CombinedEvalClaim<E>, input_r_x: E, w_r_xs: &[E]) -> E {
+        input_r_x * inner_product::<E, E>(&claim.alphas, w_r_xs)
     }
 
     fn omegas(&self, log2_step: usize) -> impl IndexedParallelIterator<Item = &F> {
@@ -165,11 +171,11 @@ impl<F: PrimeField> FftNode<F> {
 
     fn prove_wiring_eval(
         &self,
-        claim: &CombinedEvalClaim<F>,
-        w_interms: &[Vec<Vec<F>>],
-        r_x: &[F],
-        w_r_xs: &[F],
-        transcript: &mut (impl TranscriptWrite<F> + ?Sized),
+        claim: &CombinedEvalClaim<E>,
+        w_interms: &[Vec<Vec<E>>],
+        r_x: &[E],
+        w_r_xs: &[E],
+        transcript: &mut (impl TranscriptWrite<F, E> + ?Sized),
     ) -> Result<(), Error> {
         let r_gs = &claim.points;
 
@@ -178,20 +184,24 @@ impl<F: PrimeField> FftNode<F> {
         for layer in 0..self.log2_size {
             let (claim, g) = self.wiring_sum_check_predicate(r_gs, &claims, layer, transcript);
             let polys = {
-                let eq_r_x = eq_poly(&r_x, F::ONE);
-                let omegas = self.omegas(layer).copied().collect();
+                let eq_r_x = box_dense_poly(eq_poly(&r_x, E::ONE));
+                let omegas = box_dense_poly(self.omegas(layer).copied().collect::<Vec<_>>());
                 let w_interms = w_interms
                     .iter()
                     .map(|w_interms| w_interms.iter().nth_back(layer).unwrap())
                     .map(|w| repeated_dense_poly(w, 1));
-                chain![[eq_r_x, omegas].map(box_dense_poly), w_interms].collect_vec()
+                chain![
+                    [SumCheckPoly::Extension(eq_r_x), SumCheckPoly::Base(omegas)],
+                    w_interms.map(SumCheckPoly::Extension)
+                ]
+                .collect_vec()
             };
-            let (_, r_x_prime, evals) = prove_sum_check(&g, claim, &polys, transcript)?;
+            let (_, r_x_prime, evals) = prove_sum_check(&g, claim, polys, transcript)?;
             let w_interm_r_x_primes = evals[2..].to_vec();
             if layer == self.log2_size - 1 {
                 break;
             }
-            transcript.write_felts(&w_interm_r_x_primes)?;
+            transcript.write_felt_exts(&w_interm_r_x_primes)?;
             claims = w_interm_r_x_primes;
             r_x = r_x_prime[..r_x_prime.len() - 1].to_vec();
         }
@@ -201,10 +211,10 @@ impl<F: PrimeField> FftNode<F> {
 
     fn verify_wiring_eval(
         &self,
-        claim: &CombinedEvalClaim<F>,
-        r_x: &[F],
-        w_r_xs: &[F],
-        transcript: &mut (impl TranscriptRead<F> + ?Sized),
+        claim: &CombinedEvalClaim<E>,
+        r_x: &[E],
+        w_r_xs: &[E],
+        transcript: &mut (impl TranscriptRead<F, E> + ?Sized),
     ) -> Result<(), Error> {
         let r_gs = &claim.points;
         let alphas = &claim.alphas;
@@ -217,7 +227,7 @@ impl<F: PrimeField> FftNode<F> {
             let w_interm_r_x_primes = if layer == self.log2_size - 1 {
                 self.wiring_gkr_initial_evals(alphas)
             } else {
-                transcript.read_felts(r_gs.len())?
+                transcript.read_felt_exts(r_gs.len())?
             };
             if sub_claim
                 != self.wiring_sum_check_final_eval(&g, &r_x, &r_x_prime, &w_interm_r_x_primes)
@@ -233,20 +243,20 @@ impl<F: PrimeField> FftNode<F> {
 
     fn wiring_sum_check_predicate(
         &self,
-        r_gs: &[Vec<F>],
-        claims: &[F],
+        r_gs: &[Vec<E>],
+        claims: &[E],
         layer: usize,
-        transcript: &mut (impl Transcript<F> + ?Sized),
-    ) -> (F, Generic<F>) {
+        transcript: &mut (impl Transcript<F, E> + ?Sized),
+    ) -> (E, Generic<F, E>) {
         let beta = if claims.len() == 1 {
-            F::ONE
+            E::ONE
         } else {
             transcript.squeeze_challenge()
         };
-        let claim = inner_product(powers(beta).take(claims.len()), claims);
+        let claim = inner_product::<E, E>(powers(beta).take(claims.len()), claims);
 
         let expression = {
-            let one = &Expression::constant(F::ONE);
+            let one = &Expression::constant(E::ONE);
             let r_g_is = &r_gs
                 .iter()
                 .map(|r_g| r_g[layer])
@@ -265,11 +275,11 @@ impl<F: PrimeField> FftNode<F> {
 
     fn wiring_sum_check_final_eval(
         &self,
-        g: &Generic<F>,
-        r_x: &[F],
-        r_x_prime: &[F],
-        w_interm_r_x_primes: &[F],
-    ) -> F {
+        g: &Generic<F, E>,
+        r_x: &[E],
+        r_x_prime: &[E],
+        w_interm_r_x_primes: &[E],
+    ) -> E {
         let eq_eval = eq_eval([r_x, r_x_prime]);
         let omega = squares(self.omega).nth(self.log2_size - r_x.len()).unwrap();
         let omega_eval = omega_eval(omega, r_x_prime);
@@ -286,9 +296,9 @@ impl<F: PrimeField> FftNode<F> {
         )
     }
 
-    fn wiring_gkr_initial_evals(&self, alphas: &[F]) -> Vec<F> {
+    fn wiring_gkr_initial_evals(&self, alphas: &[E]) -> Vec<E> {
         self.n_inv
-            .map(|n_inv| alphas.iter().map(|alpha| n_inv * alpha).collect_vec())
+            .map(|n_inv| alphas.iter().map(|alpha| *alpha * n_inv).collect_vec())
             .unwrap_or_else(|| alphas.to_vec())
     }
 }
@@ -305,9 +315,9 @@ fn root_of_unity_inv<F: PrimeField>(k: usize) -> F {
         .unwrap()
 }
 
-fn omega_eval<F: Field>(omega: F, r_x_prime: &[F]) -> F {
+fn omega_eval<F: Field, E: ExtensionField<F>>(omega: F, r_x_prime: &[E]) -> E {
     izip!(r_x_prime, squares(omega))
-        .map(|(r_x_prime_i, omega)| F::ONE - r_x_prime_i + *r_x_prime_i * omega)
+        .map(|(r_x_prime_i, omega)| E::ONE - r_x_prime_i + *r_x_prime_i * omega)
         .product()
 }
 
@@ -320,54 +330,46 @@ mod test {
                 input::InputNode,
                 Node,
             },
+            test::{run_circuit, TestData},
             Circuit,
         },
-        dev::run_gkr,
-        poly::{box_dense_poly, test::assert_polys_eq, BoxMultilinearPoly},
+        poly::box_dense_poly,
         util::{
-            arithmetic::{fft, PrimeField},
-            dev::{rand_vec, seeded_std_rng},
+            arithmetic::{radix2_fft, ExtensionField, PrimeField},
+            dev::rand_vec,
             RngCore,
         },
     };
-    use halo2_curves::bn256::Fr;
+    use goldilocks::{Goldilocks, GoldilocksExt2};
 
     #[test]
     fn fft_and_then_ifft() {
-        let mut rng = seeded_std_rng();
-        for log2_input_size in 1..16 {
-            let (circuit, inputs, values) = fft_and_then_ifft_circuit(log2_input_size, &mut rng);
-            run_gkr::<Fr>(&circuit, &inputs, &mut rng);
-            assert_polys_eq(&circuit.evaluate(inputs), &values);
-        }
+        run_circuit::<Goldilocks, GoldilocksExt2>(fft_and_then_ifft_circuit);
     }
 
-    pub fn fft_and_then_ifft_circuit<F: PrimeField>(
+    pub fn fft_and_then_ifft_circuit<F: PrimeField, E: ExtensionField<F>>(
         log2_input_size: usize,
-        rng: impl RngCore,
-    ) -> (
-        Circuit<F>,
-        Vec<BoxMultilinearPoly<'static, F>>,
-        Vec<BoxMultilinearPoly<'static, F>>,
-    ) {
+        rng: &mut impl RngCore,
+    ) -> TestData<F, E> {
         let nodes = vec![
             InputNode::new(log2_input_size, 1).boxed(),
             FftNode::forward(log2_input_size).boxed(),
             FftNode::inverse(log2_input_size).boxed(),
         ];
         let circuit = Circuit::linear(nodes);
+
         let input = rand_vec(1 << log2_input_size, rng);
         let input_prime = {
             let omega = root_of_unity(log2_input_size);
             let mut buf = input.clone();
-            fft(&mut buf, omega, log2_input_size as u32);
+            radix2_fft(&mut buf, omega);
             buf
         };
-        let values = vec![input.clone(), input_prime, input.clone()];
-        (
-            circuit,
-            vec![box_dense_poly(input)],
-            values.into_iter().map(box_dense_poly).collect(),
-        )
+        let values = [input.clone(), input_prime, input.clone()]
+            .into_iter()
+            .map(box_dense_poly)
+            .collect();
+
+        (circuit, vec![box_dense_poly(input)], Some(values))
     }
 }

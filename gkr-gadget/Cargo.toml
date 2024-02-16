@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 gkr = { path = "../gkr" }
-halo2_curves = { workspace = true }
 rayon = { workspace = true }
 itertools = { workspace = true }
 rand_core = { workspace = true }
@@ -16,6 +15,7 @@ tiny-keccak = { version = "2.0.2", features = ["keccak"] }
 gkr = { path = "../gkr", features = ["dev"] }
 criterion = { workspace = true }
 goldilocks = { workspace = true }
+halo2_curves = { workspace = true }
 
 [features]
 default = []

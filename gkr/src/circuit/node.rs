@@ -1,5 +1,5 @@
 use crate::{
-    poly::{BoxMultilinearPoly, DynMultilinearPoly},
+    poly::BoxMultilinearPoly,
     transcript::{TranscriptRead, TranscriptWrite},
     util::arithmetic::{inner_product, Field},
     Error,
@@ -14,8 +14,8 @@ pub use fft::FftNode;
 pub use input::InputNode;
 pub use vanilla::{VanillaGate, VanillaNode};
 
-pub trait Node<F>: Debug {
-    fn boxed<'a>(self) -> Box<dyn Node<F> + 'a>
+pub trait Node<F, E>: Debug {
+    fn boxed<'a>(self) -> Box<dyn Node<F, E> + 'a>
     where
         Self: 'a + Sized,
     {
@@ -36,24 +36,25 @@ pub trait Node<F>: Debug {
 
     fn log2_output_size(&self) -> usize;
 
-    fn evaluate(&self, inputs: Vec<&DynMultilinearPoly<F>>) -> BoxMultilinearPoly<'static, F>;
+    fn evaluate(&self, inputs: Vec<&BoxMultilinearPoly<F, E>>)
+        -> BoxMultilinearPoly<'static, F, E>;
 
     fn prove_claim_reduction(
         &self,
-        claim: CombinedEvalClaim<F>,
-        inputs: Vec<&DynMultilinearPoly<F>>,
-        transcript: &mut dyn TranscriptWrite<F>,
-    ) -> Result<Vec<Vec<EvalClaim<F>>>, Error>;
+        claim: CombinedEvalClaim<E>,
+        inputs: Vec<&BoxMultilinearPoly<F, E>>,
+        transcript: &mut dyn TranscriptWrite<F, E>,
+    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error>;
 
     fn verify_claim_reduction(
         &self,
-        claim: CombinedEvalClaim<F>,
-        transcript: &mut dyn TranscriptRead<F>,
-    ) -> Result<Vec<Vec<EvalClaim<F>>>, Error>;
+        claim: CombinedEvalClaim<E>,
+        transcript: &mut dyn TranscriptRead<F, E>,
+    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error>;
 }
 
-impl<F> Node<F> for Box<dyn Node<F>> {
-    fn boxed<'a>(self) -> Box<dyn Node<F> + 'a>
+impl<F, E> Node<F, E> for Box<dyn Node<F, E>> {
+    fn boxed<'a>(self) -> Box<dyn Node<F, E> + 'a>
     where
         Self: 'a + Sized,
     {
@@ -72,24 +73,27 @@ impl<F> Node<F> for Box<dyn Node<F>> {
         (**self).log2_output_size()
     }
 
-    fn evaluate(&self, inputs: Vec<&DynMultilinearPoly<F>>) -> BoxMultilinearPoly<'static, F> {
+    fn evaluate(
+        &self,
+        inputs: Vec<&BoxMultilinearPoly<F, E>>,
+    ) -> BoxMultilinearPoly<'static, F, E> {
         (**self).evaluate(inputs)
     }
 
     fn prove_claim_reduction(
         &self,
-        claim: CombinedEvalClaim<F>,
-        inputs: Vec<&DynMultilinearPoly<F>>,
-        transcript: &mut dyn TranscriptWrite<F>,
-    ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
+        claim: CombinedEvalClaim<E>,
+        inputs: Vec<&BoxMultilinearPoly<F, E>>,
+        transcript: &mut dyn TranscriptWrite<F, E>,
+    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
         (**self).prove_claim_reduction(claim, inputs, transcript)
     }
 
     fn verify_claim_reduction(
         &self,
-        claim: CombinedEvalClaim<F>,
-        transcript: &mut dyn TranscriptRead<F>,
-    ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
+        claim: CombinedEvalClaim<E>,
+        transcript: &mut dyn TranscriptRead<F, E>,
+    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
         (**self).verify_claim_reduction(claim, transcript)
     }
 }
