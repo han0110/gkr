@@ -1,9 +1,8 @@
-use halo2_curves::ff::Field;
-use itertools::Itertools;
+use crate::util::{arithmetic::Field, Itertools};
 use rand::{
     distributions::uniform::SampleRange,
     rngs::{OsRng, StdRng},
-    CryptoRng, Rng, RngCore, SeedableRng,
+    Rng, RngCore, SeedableRng,
 };
 use std::{any::type_name, array, hash::Hash, iter};
 
@@ -15,11 +14,11 @@ pub fn field_name<F: Field>() -> &'static str {
     }
 }
 
-pub fn std_rng() -> impl RngCore + CryptoRng + Clone {
+pub fn std_rng() -> StdRng {
     StdRng::from_seed(Default::default())
 }
 
-pub fn seeded_std_rng() -> impl RngCore + CryptoRng + Clone {
+pub fn seeded_std_rng() -> StdRng {
     StdRng::seed_from_u64(OsRng.next_u64())
 }
 

@@ -4,7 +4,7 @@ use criterion::{
 };
 use gkr::{
     poly::{eq_poly, DenseMultilinearPoly, MultilinearPoly},
-    sum_check::{quadratic::Quadratic, SumCheckFunction},
+    sum_check::{quadratic::Quadratic, SumCheckFunction, SumCheckPoly},
     util::{
         arithmetic::Field,
         dev::{field_name, rand_vec, seeded_std_rng},
@@ -72,10 +72,11 @@ fn bench_compute_sum_qudratic(c: &mut Criterion) {
 
         for num_vars in RANGE {
             let [f, h] = [&f, &h].map(|poly| DenseMultilinearPoly::new(&poly[..1 << num_vars]));
+            let polys = SumCheckPoly::bases([f, h]);
             let g = Quadratic::new(num_vars);
             let id = BenchmarkId::new(field_name::<F>(), num_vars);
             group.bench_function(id, |b| {
-                b.iter(|| black_box(&g).compute_sum(0, F::ZERO, black_box(&[&f, &h])))
+                b.iter(|| black_box(&g).compute_sum(0, F::ZERO, black_box(&polys)))
             });
         }
     }

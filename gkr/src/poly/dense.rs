@@ -3,7 +3,7 @@ use crate::{
         evaluate, merge, BoxMultilinearPoly, BoxMultilinearPolyOwned, MultilinearPoly,
         MultilinearPolyOwned,
     },
-    util::arithmetic::Field,
+    util::arithmetic::{ExtensionField, Field},
 };
 use std::{fmt::Debug, marker::PhantomData, ops::Index};
 
@@ -41,10 +41,10 @@ impl<F, S: AsRef<[F]>> Index<usize> for DenseMultilinearPoly<F, S> {
     }
 }
 
-impl<F: Field, S: Clone + Debug + AsRef<[F]> + Send + Sync> MultilinearPoly<F>
-    for DenseMultilinearPoly<F, S>
+impl<F: Field, E: ExtensionField<F>, S: Clone + Debug + AsRef<[F]> + Send + Sync>
+    MultilinearPoly<F, E> for DenseMultilinearPoly<F, S>
 {
-    fn clone_box(&self) -> BoxMultilinearPoly<F> {
+    fn clone_box(&self) -> BoxMultilinearPoly<F, E> {
         self.clone().boxed()
     }
 
@@ -52,12 +52,12 @@ impl<F: Field, S: Clone + Debug + AsRef<[F]> + Send + Sync> MultilinearPoly<F>
         self.num_vars
     }
 
-    fn fix_var(&self, x_i: &F) -> BoxMultilinearPolyOwned<'static, F> {
+    fn fix_var(&self, x_i: &E) -> BoxMultilinearPolyOwned<'static, E> {
         let evals = merge(self.evals.as_ref(), x_i);
         DenseMultilinearPoly::new(evals).box_owned()
     }
 
-    fn evaluate(&self, x: &[F]) -> F {
+    fn evaluate(&self, x: &[E]) -> E {
         evaluate(self.evals.as_ref(), x)
     }
 
@@ -73,17 +73,19 @@ impl<F: Field> MultilinearPolyOwned<F> for DenseMultilinearPoly<F, Vec<F>> {
     }
 }
 
-pub fn box_dense_poly<'a, F, S>(evals: S) -> BoxMultilinearPoly<'a, F>
+pub fn box_dense_poly<'a, F, E, S>(evals: S) -> BoxMultilinearPoly<'a, F, E>
 where
     F: Field,
+    E: ExtensionField<F>,
     S: 'a + Clone + Debug + AsRef<[F]> + Send + Sync,
 {
     DenseMultilinearPoly::new(evals).boxed()
 }
 
-pub fn repeated_dense_poly<'a, F, S>(evals: S, log2_reps: usize) -> BoxMultilinearPoly<'a, F>
+pub fn repeated_dense_poly<'a, F, E, S>(evals: S, log2_reps: usize) -> BoxMultilinearPoly<'a, F, E>
 where
     F: Field,
+    E: ExtensionField<F>,
     S: 'a + Clone + Debug + AsRef<[F]> + Send + Sync,
 {
     DenseMultilinearPoly::new(evals).repeated(log2_reps).boxed()

@@ -4,6 +4,7 @@ use criterion::{
 };
 use gkr::{
     circuit::node::EvalClaim,
+    ff_ext::ExtensionField,
     poly::MultilinearPoly,
     prove_gkr,
     transcript::StdRngTranscript,
@@ -13,9 +14,13 @@ use gkr::{
     },
 };
 use gkr_gadget::hash::keccak::{dev::keccak_circuit, Keccak};
+use goldilocks::{Goldilocks, GoldilocksExt2};
 use halo2_curves::bn256;
 
-fn run_keccak256<F: PrimeField>(field_name: &str, group: &mut BenchmarkGroup<impl Measurement>) {
+fn run_keccak256<F: PrimeField, E: ExtensionField<F>>(
+    field_name: &str,
+    group: &mut BenchmarkGroup<impl Measurement>,
+) {
     let setup = |num_reps: usize| {
         let mut rng = seeded_std_rng();
         let keccak = Keccak::new(256, num_reps);
@@ -35,8 +40,8 @@ fn run_keccak256<F: PrimeField>(field_name: &str, group: &mut BenchmarkGroup<imp
         let (circuit, values, output_claims) = setup(num_reps);
         group.bench_with_input(id, &num_reps, |b, _| {
             b.iter(|| {
-                let mut transcript = StdRngTranscript::<Vec<_>>::default();
-                prove_gkr::<F>(&circuit, &values, &output_claims, &mut transcript).unwrap();
+                let mut transcript = StdRngTranscript::default();
+                prove_gkr::<F, E>(&circuit, &values, &output_claims, &mut transcript).unwrap();
             });
         });
     }
@@ -46,8 +51,8 @@ fn bench_keccak256(c: &mut Criterion) {
     let mut group = c.benchmark_group("keccak256");
     group.sample_size(10);
 
-    run_keccak256::<bn256::Fr>("bn254", &mut group);
-    run_keccak256::<goldilocks::GoldilocksExt2>("goldilocks_qe", &mut group);
+    run_keccak256::<Goldilocks, GoldilocksExt2>("goldilocks_qe", &mut group);
+    run_keccak256::<bn256::Fr, bn256::Fr>("bn254", &mut group);
 }
 
 criterion_group!(bench, bench_keccak256);

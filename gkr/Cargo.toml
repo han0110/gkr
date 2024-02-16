@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-halo2_curves = { workspace = true }
+ff-ext = { path = "../ff-ext" }
 rayon = { workspace = true }
 itertools = { workspace = true }
 rand_core = { workspace = true }
@@ -15,6 +15,7 @@ rand = { workspace = true, optional = true }
 rand = { workspace = true }
 criterion = { workspace = true }
 goldilocks = { workspace = true }
+halo2_curves = { workspace = true }
 
 [features]
 default = []

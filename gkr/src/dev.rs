@@ -3,22 +3,26 @@ use crate::{
     poly::{BoxMultilinearPoly, MultilinearPoly},
     prove_gkr,
     transcript::StdRngTranscript,
-    util::{arithmetic::PrimeField, dev::rand_vec, izip_eq, Itertools, RngCore},
+    util::{
+        arithmetic::{ExtensionField, PrimeField},
+        dev::rand_vec,
+        izip_eq, Itertools, RngCore,
+    },
     verify_gkr,
 };
 
-pub fn run_gkr<F: PrimeField>(
-    circuit: &Circuit<F>,
-    inputs: &[BoxMultilinearPoly<F>],
+pub fn run_gkr<F: PrimeField, E: ExtensionField<F>>(
+    circuit: &Circuit<F, E>,
+    inputs: &[BoxMultilinearPoly<F, E>],
     rng: impl RngCore,
 ) {
     let values = circuit.evaluate(inputs.iter().map(MultilinearPoly::clone_box).collect());
     run_gkr_with_values(circuit, &values, rng);
 }
 
-pub fn run_gkr_with_values<F: PrimeField>(
-    circuit: &Circuit<F>,
-    values: &[BoxMultilinearPoly<F>],
+pub fn run_gkr_with_values<F: PrimeField, E: ExtensionField<F>>(
+    circuit: &Circuit<F, E>,
+    values: &[BoxMultilinearPoly<F, E>],
     mut rng: impl RngCore,
 ) {
     let output_claims = circuit

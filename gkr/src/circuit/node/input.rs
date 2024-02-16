@@ -1,6 +1,6 @@
 use crate::{
     circuit::node::{CombinedEvalClaim, EvalClaim, Node},
-    poly::{BoxMultilinearPoly, DynMultilinearPoly},
+    poly::BoxMultilinearPoly,
     transcript::{TranscriptRead, TranscriptWrite},
     Error,
 };
@@ -22,7 +22,7 @@ impl InputNode {
     }
 }
 
-impl<F> Node<F> for InputNode {
+impl<F, E> Node<F, E> for InputNode {
     fn is_input(&self) -> bool {
         true
     }
@@ -35,24 +35,24 @@ impl<F> Node<F> for InputNode {
         self.log2_size + self.log2_reps
     }
 
-    fn evaluate(&self, _: Vec<&DynMultilinearPoly<F>>) -> BoxMultilinearPoly<'static, F> {
+    fn evaluate(&self, _: Vec<&BoxMultilinearPoly<F, E>>) -> BoxMultilinearPoly<'static, F, E> {
         unreachable!()
     }
 
     fn prove_claim_reduction(
         &self,
-        _: CombinedEvalClaim<F>,
-        _: Vec<&DynMultilinearPoly<F>>,
-        _: &mut dyn TranscriptWrite<F>,
-    ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
+        _: CombinedEvalClaim<E>,
+        _: Vec<&BoxMultilinearPoly<F, E>>,
+        _: &mut dyn TranscriptWrite<F, E>,
+    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
         unreachable!()
     }
 
     fn verify_claim_reduction(
         &self,
-        _: CombinedEvalClaim<F>,
-        _: &mut dyn TranscriptRead<F>,
-    ) -> Result<Vec<Vec<EvalClaim<F>>>, Error> {
+        _: CombinedEvalClaim<E>,
+        _: &mut dyn TranscriptRead<F, E>,
+    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
         unreachable!()
     }
 }

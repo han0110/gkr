@@ -1,9 +1,9 @@
 use crate::{
     poly::MultilinearPoly,
-    sum_check::SumCheckFunction,
+    sum_check::{SumCheckFunction, SumCheckPoly},
     transcript::{TranscriptRead, TranscriptWrite},
     util::{
-        arithmetic::{inner_product, vander_mat_inv, Field, PrimeField},
+        arithmetic::{inner_product, steps, vander_mat_inv, ExtensionField, Field},
         chain,
         collection::AdditiveVec,
         expression::{Expression, ExpressionRegistry},
@@ -15,15 +15,15 @@ use rayon::prelude::*;
 use std::fmt::Debug;
 
 #[derive(Clone, Debug)]
-pub struct Generic<F: Field> {
+pub struct Generic<F: Field, E: ExtensionField<F>> {
     num_vars: usize,
-    expression: Expression<F, usize>,
-    registry: ExpressionRegistry<F, usize>,
+    expression: Expression<E, usize>,
+    registry: ExpressionRegistry<E, usize>,
     degree: usize,
     vander_mat_inv: Vec<Vec<F>>,
 }
 
-impl<F: Field> SumCheckFunction<F> for Generic<F> {
+impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Generic<F, E> {
     fn num_vars(&self) -> usize {
         self.num_vars
     }
@@ -35,9 +35,9 @@ impl<F: Field> SumCheckFunction<F> for Generic<F> {
     fn compute_sum(
         &self,
         _: usize,
-        claim: F,
-        polys: &[&(impl MultilinearPoly<F> + ?Sized)],
-    ) -> Vec<F> {
+        claim: E,
+        polys: &[SumCheckPoly<F, E, impl MultilinearPoly<F, E>, impl MultilinearPoly<E, E>>],
+    ) -> Vec<E> {
         let registry = &self.registry;
         assert_eq!(polys.len(), registry.datas().len());
 
@@ -45,19 +45,23 @@ impl<F: Field> SumCheckFunction<F> for Generic<F> {
             let evaluate = |b| {
                 self.expression.evaluate(
                     &|constant| constant,
-                    &|poly| polys[poly][b],
+                    &|poly| match &polys[poly] {
+                        SumCheckPoly::Base(poly) => E::from_base(poly[b]),
+                        SumCheckPoly::Extension(poly) => poly[b],
+                        _ => unreachable!(),
+                    },
                     &|value| -value,
                     &|lhs, rhs| lhs + rhs,
                     &|lhs, rhs| lhs * rhs,
                 )
             };
             assert_eq!(
-                (0..polys[0].len()).into_par_iter().map(evaluate).sum::<F>(),
+                (0..polys[0].len()).into_par_iter().map(evaluate).sum::<E>(),
                 claim,
             );
         }
 
-        let buf = (registry.buffer(), vec![F::ZERO; registry.datas().len()]);
+        let buf = (registry.buffer(), vec![E::ZERO; registry.datas().len()]);
         let AdditiveVec(evals) = (0..polys[0].len() >> 1)
             .into_par_iter()
             .fold_with(
@@ -68,9 +72,16 @@ impl<F: Field> SumCheckFunction<F> for Generic<F> {
                         &mut step_buf,
                         registry.datas(),
                     )
-                    .for_each(|(eval, step, poly)| {
-                        *eval = polys[*poly][(b << 1) + 1];
-                        *step = *eval - polys[*poly][b << 1];
+                    .for_each(|(eval, step, poly)| match &polys[*poly] {
+                        SumCheckPoly::Base(poly) => {
+                            *eval = E::from_base(poly[(b << 1) + 1]);
+                            *step = E::from_base(poly[(b << 1) + 1] - poly[b << 1]);
+                        }
+                        SumCheckPoly::Extension(poly) => {
+                            *eval = poly[(b << 1) + 1];
+                            *step = poly[(b << 1) + 1] - poly[b << 1];
+                        }
+                        _ => unreachable!(),
                     });
                     izip!(registry.offsets().calcs().., registry.calcs())
                         .for_each(|(idx, calc)| calc.calculate(&mut eval_buf, idx));
@@ -101,34 +112,34 @@ impl<F: Field> SumCheckFunction<F> for Generic<F> {
     fn write_sum(
         &self,
         _: usize,
-        sum: &[F],
-        transcript: &mut (impl TranscriptWrite<F> + ?Sized),
+        sum: &[E],
+        transcript: &mut (impl TranscriptWrite<F, E> + ?Sized),
     ) -> Result<(), Error> {
-        transcript.write_felt(&sum[0])?;
-        transcript.write_felts(&sum[2..])?;
+        transcript.write_felt_ext(&sum[0])?;
+        transcript.write_felt_exts(&sum[2..])?;
         Ok(())
     }
 
     fn read_sum(
         &self,
         _: usize,
-        claim: F,
-        transcript: &mut (impl TranscriptRead<F> + ?Sized),
-    ) -> Result<Vec<F>, Error> {
-        let mut sum = vec![F::ZERO; self.degree + 1];
-        sum[0] = transcript.read_felt()?;
-        sum[2..].copy_from_slice(&transcript.read_felts(self.degree - 1)?);
-        sum[1] = claim - sum[0].double() - sum[2..].iter().sum::<F>();
+        claim: E,
+        transcript: &mut (impl TranscriptRead<F, E> + ?Sized),
+    ) -> Result<Vec<E>, Error> {
+        let mut sum = vec![E::ZERO; self.degree + 1];
+        sum[0] = transcript.read_felt_ext()?;
+        sum[2..].copy_from_slice(&transcript.read_felt_exts(self.degree - 1)?);
+        sum[1] = claim - sum[0].double() - sum[2..].iter().sum::<E>();
         Ok(sum)
     }
 }
 
-impl<F: PrimeField> Generic<F> {
-    pub fn new(num_vars: usize, expression: &Expression<F, usize>) -> Self {
+impl<F: Field, E: ExtensionField<F>> Generic<F, E> {
+    pub fn new(num_vars: usize, expression: &Expression<E, usize>) -> Self {
         let registry = ExpressionRegistry::new(expression);
         let degree = expression.degree();
         assert!(degree >= 2);
-        let vander_mat_inv = vander_mat_inv((0..).map(F::from).take(degree + 1).collect());
+        let vander_mat_inv = vander_mat_inv(steps(F::ZERO).take(degree + 1).collect());
         Self {
             num_vars,
             expression: expression.clone(),
@@ -138,7 +149,7 @@ impl<F: PrimeField> Generic<F> {
         }
     }
 
-    pub fn expression(&self) -> &Expression<F, usize> {
+    pub fn expression(&self) -> &Expression<E, usize> {
         &self.expression
     }
 }

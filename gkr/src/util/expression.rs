@@ -1,5 +1,5 @@
 use crate::util::{
-    arithmetic::{powers, Field},
+    arithmetic::{powers, ExtensionField, Field},
     izip, Itertools,
 };
 use std::{
@@ -148,7 +148,7 @@ impl<F: Field, K: Clone> Product for Expression<F, K> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ExpressionRegistry<F: Field, K> {
+pub(crate) struct ExpressionRegistry<F, K> {
     offsets: Offsets,
     constants: Vec<F>,
     datas: Vec<K>,
@@ -184,9 +184,9 @@ impl<F: Field, K: Clone + Default + Eq> ExpressionRegistry<F, K> {
         &self.calcs
     }
 
-    pub(crate) fn buffer(&self) -> Vec<F> {
-        let mut buf = vec![F::ZERO; self.offsets.calcs() + self.calcs.len()];
-        buf[..self.constants.len()].clone_from_slice(&self.constants);
+    pub(crate) fn buffer<E: ExtensionField<F>>(&self) -> Vec<E> {
+        let mut buf = vec![E::ZERO; self.offsets.calcs() + self.calcs.len()];
+        izip!(&mut buf, &self.constants).for_each(|(buf, constant)| *buf = E::from_base(*constant));
         buf
     }
 
