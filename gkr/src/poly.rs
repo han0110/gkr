@@ -34,6 +34,20 @@ pub trait MultilinearPoly<F, E = F>: Debug + Send + Sync + Index<usize, Output =
 
     fn as_dense(&self) -> Option<&[F]>;
 
+    fn to_dense(&self) -> Vec<F>
+    where
+        F: Send + Sync + Copy,
+    {
+        self.as_dense()
+            .map(|dense| dense.par_iter().copied().collect())
+            .unwrap_or_else(|| {
+                (0..1 << self.num_vars())
+                    .into_par_iter()
+                    .map(|b| self[b])
+                    .collect()
+            })
+    }
+
     fn clone_box(&self) -> BoxMultilinearPoly<F, E>;
 
     fn boxed<'a>(self) -> BoxMultilinearPoly<'a, F, E>
@@ -66,7 +80,7 @@ pub fn evaluate<F: Field, E: ExtensionField<F>>(evals: &[F], x: &[E]) -> E {
         .unwrap_or_else(|| E::from_base(evals[0]))
 }
 
-fn merge<F: Field, E: ExtensionField<F>>(evals: &[F], x_i: &E) -> Vec<E> {
+pub fn merge<F: Field, E: ExtensionField<F>>(evals: &[F], x_i: &E) -> Vec<E> {
     let merge = |evals: &[_]| *x_i * (evals[1] - evals[0]) + evals[0];
     evals.par_chunks(2).with_min_len(64).map(merge).collect()
 }
@@ -106,6 +120,13 @@ macro_rules! forward_impl {
                 (**self).as_dense()
             }
 
+            fn to_dense(&self) -> Vec<F>
+            where
+                F: Send + Sync + Copy,
+            {
+                (**self).to_dense()
+            }
+
             $($($custom)*)?
         }
     };
@@ -138,16 +159,6 @@ pub(crate) mod test {
         let lhs = lhs.into_iter().collect_vec();
         let rhs = rhs.into_iter().collect_vec();
         assert_eq!(lhs.len(), rhs.len());
-        izip_par!(lhs, rhs).for_each(|(lhs, rhs)| assert_poly_eq(lhs, rhs));
-    }
-
-    pub(crate) fn assert_poly_eq<F: Field, E: ExtensionField<F>>(
-        lhs: impl MultilinearPoly<F, E>,
-        rhs: impl MultilinearPoly<F, E>,
-    ) {
-        assert_eq!(lhs.num_vars(), rhs.num_vars());
-        (0..lhs.len())
-            .into_par_iter()
-            .for_each(|b| assert_eq!(lhs[b], rhs[b]))
+        izip_par!(lhs, rhs).for_each(|(lhs, rhs)| assert_eq!(lhs.to_dense(), rhs.to_dense()));
     }
 }

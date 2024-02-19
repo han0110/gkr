@@ -8,10 +8,12 @@ use std::fmt::Debug;
 
 mod fft;
 mod input;
+mod logup;
 mod vanilla;
 
 pub use fft::FftNode;
 pub use input::InputNode;
+pub use logup::LogUpNode;
 pub use vanilla::{VanillaGate, VanillaNode};
 
 pub trait Node<F, E>: Debug {

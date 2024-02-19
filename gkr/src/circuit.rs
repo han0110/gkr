@@ -31,10 +31,7 @@ impl<F: Field, E: ExtensionField<F>> Circuit<F, E> {
     }
 
     pub fn connect(&mut self, from: NodeId, to: NodeId) {
-        assert_eq!(
-            self.nodes()[from.0].log2_output_size(),
-            self.nodes()[to.0].log2_input_size()
-        );
+        assert!(self.nodes()[from.0].log2_output_size() <= self.nodes()[to.0].log2_input_size());
         assert!(!self.nodes()[to.0].is_input());
         self.dag.connect(from, to);
         self.topo = self.dag.topo();
