@@ -1,10 +1,24 @@
 use crate::util::{izip, izip_eq, Itertools};
+use rayon::{current_num_threads, prelude::*};
 use std::{borrow::Borrow, iter, mem};
 
 pub use ff_ext::{
     ff::{BatchInvert, Field, PrimeField},
     ExtensionField,
 };
+
+pub trait ParallelBatchInvert<F: Field> {
+    fn par_batch_invert(&mut self);
+}
+
+impl<F: Field> ParallelBatchInvert<F> for [F] {
+    fn par_batch_invert(&mut self) {
+        let chunk_size = div_ceil(self.as_parallel_slice_mut().len(), current_num_threads());
+        self.par_chunks_mut(chunk_size).for_each(|chunk| {
+            chunk.batch_invert();
+        });
+    }
+}
 
 pub fn div_ceil(dividend: usize, divisor: usize) -> usize {
     (dividend + divisor - 1) / divisor

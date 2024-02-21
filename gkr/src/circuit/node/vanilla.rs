@@ -94,7 +94,7 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for VanillaNode<F, E> {
         let mut input_r_xs = Vec::new();
         for (phase, indices) in izip!(0.., &self.inputs) {
             let (subclaim, r_x_i, evals) = {
-                let g = Quadratic::new(self.log2_input_size());
+                let g = self.sum_check_function(phase);
                 let claim = claim - self.sum_check_eval(&eq_r_gs, &eq_r_xs, &input_r_xs);
                 let polys = self.sum_check_polys(&inputs, &eq_r_g_prime, &eq_r_xs, &input_r_xs);
                 prove_sum_check(&g, claim, polys, transcript)?
@@ -127,7 +127,7 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for VanillaNode<F, E> {
         let mut input_r_xs = Vec::new();
         for (phase, indices) in izip!(0.., &self.inputs) {
             let (subclaim, r_x_i) = {
-                let g = Quadratic::new(self.log2_input_size());
+                let g = self.sum_check_function(phase);
                 let claim = claim - self.sum_check_eval(&eq_r_gs, &eq_r_xs, &input_r_xs);
                 verify_sum_check(&g, claim, transcript)?
             };
@@ -231,6 +231,12 @@ impl<F: Field, E: ExtensionField<F>> VanillaNode<F, E> {
         PartialEqPoly::new(r_x, self.log2_sub_input_size, scalar)
     }
 
+    fn sum_check_function(&self, phase: usize) -> Quadratic<E> {
+        let n = self.inputs[phase].len();
+        let pairs = (0..n).map(|idx| (None, idx, n + idx)).collect();
+        Quadratic::new(self.log2_input_size(), pairs)
+    }
+
     fn sum_check_polys<'a>(
         &self,
         inputs: &'a [&BoxMultilinearPoly<'a, F, E>],
@@ -294,20 +300,14 @@ impl<F: Field, E: ExtensionField<F>> VanillaNode<F, E> {
             })
             .collect_vec();
         let evaluate = |expr: &Expression<F, Wire>, rep: usize| {
-            expr.evaluate(
-                &|constant| E::from_base(constant),
-                &|(idx, b)| {
-                    let b = (rep << sub_size[idx]) + b;
-                    match &data[idx] {
-                        SumCheckPoly::Base(poly) => E::from_base(poly[b]),
-                        SumCheckPoly::Extension(poly) => poly[b],
-                        _ => unreachable!(),
-                    }
-                },
-                &|value| -value,
-                &|lhs, rhs| lhs + rhs,
-                &|lhs, rhs| lhs * rhs,
-            )
+            expr.evaluate_felt(&|(idx, b)| {
+                let b = (rep << sub_size[idx]) + b;
+                match &data[idx] {
+                    SumCheckPoly::Base(poly) => E::from(poly[b]),
+                    SumCheckPoly::Extension(poly) => poly[b],
+                    _ => unreachable!(),
+                }
+            })
         };
         let wiring = |exprs: &Vec<Vec<_>>| {
             let log2_sub_input_size = self.log2_sub_input_size();

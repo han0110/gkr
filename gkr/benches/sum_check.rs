@@ -42,7 +42,7 @@ fn bench_sum_check(c: &mut Criterion) {
     let mut group = c.benchmark_group("sum_check_eq_f");
 
     run_sum_check::<Goldilocks, GoldilocksExt2, _>(&mut group, "quadratic", &|r| {
-        let g = Quadratic::new(r.len());
+        let g = Quadratic::new(r.len(), vec![(None, 0, 1)]);
         let eq_poly = box_dense_poly(eq_poly(r, GoldilocksExt2::ONE));
         (g, Some(eq_poly))
     });

@@ -65,6 +65,18 @@ impl<F: Clone, K: Clone> Expression<F, K> {
     }
 }
 
+impl<F: Field, K: Clone> Expression<F, K> {
+    pub fn evaluate_felt<E: ExtensionField<F>>(&self, data: &impl Fn(K) -> E) -> E {
+        self.evaluate(
+            &|constant| E::from(constant),
+            data,
+            &|value| -value,
+            &|a, b| a + b,
+            &|a, b| a * b,
+        )
+    }
+}
+
 impl<F> Expression<F, usize> {
     pub fn poly(poly: usize) -> Self {
         Self::Data(poly)
@@ -186,7 +198,7 @@ impl<F: Field, K: Clone + Default + Eq> ExpressionRegistry<F, K> {
 
     pub(crate) fn buffer<E: ExtensionField<F>>(&self) -> Vec<E> {
         let mut buf = vec![E::ZERO; self.offsets.calcs() + self.calcs.len()];
-        izip!(&mut buf, &self.constants).for_each(|(buf, constant)| *buf = E::from_base(*constant));
+        izip!(&mut buf, &self.constants).for_each(|(buf, constant)| *buf = E::from(*constant));
         buf
     }
 
