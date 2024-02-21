@@ -1,5 +1,5 @@
 use crate::{
-    circuit::node::{logup::LogUpState::*, CombinedEvalClaim, EvalClaim, Node},
+    circuit::node::{log_up::LogUpState::*, CombinedEvalClaim, EvalClaim, Node},
     izip_par,
     poly::{box_dense_poly, eq_eval, eq_poly, merge, BoxMultilinearPoly, MultilinearPoly},
     sum_check::{
@@ -507,7 +507,7 @@ fn fractional_sums<F: Field, E: ExtensionField<F>>(
 pub mod test {
     use crate::{
         circuit::{
-            node::{input::InputNode, LogUpNode},
+            node::{input::InputNode, log_up::LogUpNode},
             test::{run_circuit, TestData},
             Circuit,
         },
