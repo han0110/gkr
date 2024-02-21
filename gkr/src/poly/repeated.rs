@@ -71,7 +71,7 @@ where
         } else {
             assert!(self.log2_reps > 0);
 
-            let inner = DenseMultilinearPoly::new(vec![E::from_base(self.inner[0])]).box_owned();
+            let inner = DenseMultilinearPoly::new(vec![E::from(self.inner[0])]).box_owned();
             RepeatedMultilinearPoly::new(inner, self.log2_reps - 1).box_owned()
         }
     }

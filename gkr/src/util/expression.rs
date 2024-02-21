@@ -186,7 +186,7 @@ impl<F: Field, K: Clone + Default + Eq> ExpressionRegistry<F, K> {
 
     pub(crate) fn buffer<E: ExtensionField<F>>(&self) -> Vec<E> {
         let mut buf = vec![E::ZERO; self.offsets.calcs() + self.calcs.len()];
-        izip!(&mut buf, &self.constants).for_each(|(buf, constant)| *buf = E::from_base(*constant));
+        izip!(&mut buf, &self.constants).for_each(|(buf, constant)| *buf = E::from(*constant));
         buf
     }
 

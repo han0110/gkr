@@ -8,6 +8,7 @@ pub use ff;
 
 pub trait ExtensionField<F>:
     Field
+    + From<F>
     + Add<F, Output = Self>
     + Sub<F, Output = Self>
     + Mul<F, Output = Self>
@@ -23,8 +24,6 @@ pub trait ExtensionField<F>:
 {
     const DEGREE: usize;
 
-    fn from_base(base: F) -> Self;
-
     fn from_bases(bases: &[F]) -> Self;
 
     fn as_bases(&self) -> &[F];
@@ -32,10 +31,6 @@ pub trait ExtensionField<F>:
 
 impl<F: Field> ExtensionField<F> for F {
     const DEGREE: usize = 1;
-
-    fn from_base(base: F) -> Self {
-        base
-    }
 
     fn from_bases(bases: &[F]) -> Self {
         debug_assert_eq!(bases.len(), 1);
@@ -48,15 +43,11 @@ impl<F: Field> ExtensionField<F> for F {
 }
 
 mod impl_goldilocks {
-    use crate::{ff::Field, ExtensionField};
+    use crate::ExtensionField;
     use goldilocks::{Goldilocks, GoldilocksExt2};
 
     impl ExtensionField<Goldilocks> for GoldilocksExt2 {
         const DEGREE: usize = 2;
-
-        fn from_base(base: Goldilocks) -> Self {
-            Self([base, Goldilocks::ZERO])
-        }
 
         fn from_bases(bases: &[Goldilocks]) -> Self {
             debug_assert_eq!(bases.len(), 2);

@@ -295,11 +295,11 @@ impl<F: Field, E: ExtensionField<F>> VanillaNode<F, E> {
             .collect_vec();
         let evaluate = |expr: &Expression<F, Wire>, rep: usize| {
             expr.evaluate(
-                &|constant| E::from_base(constant),
+                &|constant| E::from(constant),
                 &|(idx, b)| {
                     let b = (rep << sub_size[idx]) + b;
                     match &data[idx] {
-                        SumCheckPoly::Base(poly) => E::from_base(poly[b]),
+                        SumCheckPoly::Base(poly) => E::from(poly[b]),
                         SumCheckPoly::Extension(poly) => poly[b],
                         _ => unreachable!(),
                     }

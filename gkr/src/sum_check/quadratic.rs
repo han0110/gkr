@@ -48,7 +48,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Quadratic {
                             .into_par_iter()
                             .map(|idx| a[idx] * b[idx])
                             .sum(),
-                        |sum| E::from_base(sum)
+                        |sum| E::from(sum)
                     ))
                     .sum::<E>(),
                 claim
@@ -68,7 +68,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Quadratic {
                             AdditiveArray([coeff_0, coeff_2])
                         })
                         .sum::<AdditiveArray<_, 2>>(),
-                    |sum| AdditiveArray(sum.0.map(E::from_base))
+                    |sum| AdditiveArray(sum.0.map(E::from))
                 )
             })
             .sum();

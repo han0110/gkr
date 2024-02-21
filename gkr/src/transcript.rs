@@ -53,6 +53,21 @@ pub trait TranscriptRead<F, E>: Transcript<F, E> {
     fn read_felt_exts(&mut self, n: usize) -> Result<Vec<E>, Error> {
         iter::repeat_with(|| self.read_felt_ext()).take(n).collect()
     }
+
+    fn read_felt_as_ext(&mut self) -> Result<E, Error>
+    where
+        E: From<F>,
+    {
+        self.read_felt().map(E::from)
+    }
+
+    fn read_felts_as_exts(&mut self, n: usize) -> Result<Vec<E>, Error>
+    where
+        E: From<F>,
+    {
+        self.read_felts(n)
+            .map(|felts| felts.into_iter().map_into().collect())
+    }
 }
 
 pub type StdRngTranscript<S> = RngTranscript<S, StdRng>;

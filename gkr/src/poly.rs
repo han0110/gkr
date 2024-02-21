@@ -77,7 +77,7 @@ pub fn evaluate<F: Field, E: ExtensionField<F>>(evals: &[F], x: &[E]) -> E {
             let init = merge(evals, x_0);
             x.iter().fold(init, |evals, x_i| merge(&evals, x_i))[0]
         })
-        .unwrap_or_else(|| E::from_base(evals[0]))
+        .unwrap_or_else(|| E::from(evals[0]))
 }
 
 pub fn merge<F: Field, E: ExtensionField<F>>(evals: &[F], x_i: &E) -> Vec<E> {

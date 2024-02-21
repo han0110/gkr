@@ -46,7 +46,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Generic<F, E> {
                 self.expression.evaluate(
                     &|constant| constant,
                     &|poly| match &polys[poly] {
-                        SumCheckPoly::Base(poly) => E::from_base(poly[b]),
+                        SumCheckPoly::Base(poly) => E::from(poly[b]),
                         SumCheckPoly::Extension(poly) => poly[b],
                         _ => unreachable!(),
                     },
@@ -74,8 +74,8 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Generic<F, E> {
                     )
                     .for_each(|(eval, step, poly)| match &polys[*poly] {
                         SumCheckPoly::Base(poly) => {
-                            *eval = E::from_base(poly[(b << 1) + 1]);
-                            *step = E::from_base(poly[(b << 1) + 1] - poly[b << 1]);
+                            *eval = E::from(poly[(b << 1) + 1]);
+                            *step = E::from(poly[(b << 1) + 1] - poly[b << 1]);
                         }
                         SumCheckPoly::Extension(poly) => {
                             *eval = poly[(b << 1) + 1];

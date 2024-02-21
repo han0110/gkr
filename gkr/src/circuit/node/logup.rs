@@ -1,11 +1,11 @@
 use crate::{
-    circuit::node::{CombinedEvalClaim, EvalClaim, Node},
+    circuit::node::{logup::LogUpState::*, CombinedEvalClaim, EvalClaim, Node},
     izip_par,
     poly::{box_dense_poly, eq_eval, eq_poly, merge, BoxMultilinearPoly, MultilinearPoly},
     sum_check::{
         err_unmatched_evaluation, generic::Generic, prove_sum_check, verify_sum_check, SumCheckPoly,
     },
-    transcript::{TranscriptRead, TranscriptWrite},
+    transcript::{Transcript, TranscriptRead, TranscriptWrite},
     util::{
         arithmetic::{inner_product, powers, ExtensionField, Field, ParallelBatchInvert},
         chain,
@@ -15,25 +15,13 @@ use crate::{
     Error,
 };
 use rayon::prelude::*;
-use std::{array, iter, ops::Index};
+use std::{array, cmp::Ordering::*, iter, ops::Index};
 
 #[derive(Clone, Debug)]
 pub struct LogUpNode {
     log2_t_size: usize,
     log2_f_size: usize,
     num_fs: usize,
-}
-
-impl LogUpNode {
-    pub fn new(log2_t_size: usize, log2_f_size: usize, num_fs: usize) -> Self {
-        assert_ne!(num_fs, 0);
-
-        Self {
-            log2_t_size,
-            log2_f_size,
-            num_fs,
-        }
-    }
 }
 
 impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
@@ -83,8 +71,8 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
             .map(|f| fractional_sums(None, f, gamma))
             .collect_vec();
 
-        let m_t_sum_check_polys = |log2_size: usize| {
-            if log2_size + 1 == self.log2_t_size {
+        let m_t_sum_check_polys = |layer: usize| {
+            if layer + 1 == self.log2_t_size {
                 let len = 1 << self.log2_t_size;
                 let mid = len >> 1;
                 let [[m_l, m_r], [t_l, t_r]] = [m, t].map(|p| {
@@ -98,16 +86,17 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
                 });
                 [m_l, m_r, t_l, t_r].map(SumCheckPoly::Base)
             } else {
-                let (numer, denom) = m_t_fsums.iter().nth_back(log2_size + 1).unwrap();
-                let mid = numer.len() >> 1;
-                let [(n_l, n_r), (d_l, d_r)] = [numer, denom].map(|value| value.split_at(mid));
+                let (n, d) = &m_t_fsums[m_t_fsums.len() - layer - 2];
+                let mid = n.len() >> 1;
+                let [(n_l, n_r), (d_l, d_r)] = [n, d].map(|value| value.split_at(mid));
                 [n_l, n_r, d_l, d_r]
-                    .map(|value| box_dense_poly::<E, E, _>(value))
+                    .map(box_dense_poly::<E, E, _>)
                     .map(SumCheckPoly::<F, E, _, _>::Extension)
             }
+            .into()
         };
-        let f_sum_check_polys = |log2_size: usize| {
-            if log2_size + 1 == self.log2_f_size {
+        let f_sum_check_polys = |layer: usize| {
+            if layer + 1 == self.log2_f_size {
                 let len = 1 << self.log2_f_size;
                 let mid = len >> 1;
                 fs.iter()
@@ -126,162 +115,101 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
                 f_fsums
                     .iter()
                     .flat_map(|polys| {
-                        let (numer, denom) = polys.iter().nth_back(log2_size + 1).unwrap();
-                        let mid = numer.len() >> 1;
-                        let [(n_l, n_r), (d_l, d_r)] =
-                            [numer, denom].map(|value| value.split_at(mid));
-                        [n_l, n_r, d_l, d_r]
-                            .map(|value| box_dense_poly::<E, E, _>(value))
-                            .map(SumCheckPoly::<F, E, _, _>::Extension)
+                        let (n, d) = &polys[polys.len() - layer - 2];
+                        let mid = n.len() >> 1;
+                        let [(n_l, n_r), (d_l, d_r)] = [n, d].map(|value| value.split_at(mid));
+                        [n_l, n_r, d_l, d_r].map(box_dense_poly::<E, E, _>)
                     })
+                    .map(SumCheckPoly::<F, E, _, _>::Extension)
                     .collect_vec()
             }
         };
 
-        if self.log2_t_size == 0 {
+        let mut m_t_claims = if self.log2_t_size == 0 {
             transcript.write_felt(&m[0])?;
             transcript.write_felt(&t[0])?;
+            vec![E::from(m[0]), E::from(t[0])]
         } else {
-            let (numer, denom) = m_t_fsums.last().unwrap();
-            transcript.write_felt_ext(&numer[0])?;
-            transcript.write_felt_ext(&denom[0])?;
-        }
-        for (f, f_fsums) in izip!(fs, &f_fsums) {
-            if self.log2_f_size == 0 {
-                transcript.write_felt(&f[0])?;
-            } else {
-                let (numer, denom) = f_fsums.last().unwrap();
-                transcript.write_felt_ext(&numer[0])?;
-                transcript.write_felt_ext(&denom[0])?;
-            }
-        }
-
-        let mut m_t_claims = vec![E::from_base(m[0]), E::from_base(t[0])];
-        let mut f_claims = fs.iter().map(|f| E::from_base(f[0])).collect_vec();
+            let (n, d) = m_t_fsums.last().unwrap();
+            transcript.write_felt_ext(&n[0])?;
+            transcript.write_felt_ext(&d[0])?;
+            vec![n[0], d[0]]
+        };
+        let mut f_claims = izip!(fs, &f_fsums)
+            .map(|(f, f_fsums)| {
+                if self.log2_f_size == 0 {
+                    transcript.write_felt(&f[0])?;
+                    Ok(vec![E::from(f[0])])
+                } else {
+                    let (n, d) = f_fsums.last().unwrap();
+                    transcript.write_felt_ext(&n[0])?;
+                    transcript.write_felt_ext(&d[0])?;
+                    Ok(vec![n[0], d[0]])
+                }
+            })
+            .flatten_ok()
+            .try_collect::<_, Vec<_>, _>()?;
         let mut r_m_t = Vec::new();
         let mut r_f = Vec::new();
-        let mut r = Vec::new();
-        for log2_size in 0..self.log2_t_size.max(self.log2_f_size) {
-            let is_proving_m_t = log2_size < self.log2_t_size;
-            let is_proving_m_t_initial = log2_size + 1 == self.log2_t_size;
-            let is_proving_f = log2_size < self.log2_f_size;
-            let is_proving_f_initial = log2_size + 1 == self.log2_f_size;
+        for layer in 0..self.log2_t_size.max(self.log2_f_size) {
+            let [m_t_state, f_state] = self.log_up_state(layer);
 
-            let (r_prime, m_t_evals, f_evals) = if log2_size == 0 {
-                let m_t_evals = if is_proving_m_t_initial {
-                    let m_t_fsum_polys = m_t_sum_check_polys(log2_size);
-                    let m_t_evals = m_t_fsum_polys
-                        .iter()
-                        .map(|poly| match poly {
-                            SumCheckPoly::Base(poly) => poly[0],
-                            _ => unreachable!(),
-                        })
-                        .collect_vec();
-                    transcript.write_felts(&m_t_evals)?;
-                    m_t_evals.into_iter().map(E::from_base).collect_vec()
-                } else if is_proving_m_t {
-                    let m_t_fsum_polys = m_t_sum_check_polys(log2_size);
-                    let m_t_evals = m_t_fsum_polys
-                        .iter()
-                        .map(|poly| match poly {
-                            SumCheckPoly::Extension(poly) => poly[0],
-                            _ => unreachable!(),
-                        })
-                        .collect_vec();
-                    transcript.write_felt_exts(&m_t_evals)?;
-                    m_t_evals
-                } else {
-                    Vec::new()
+            let (r_prime, m_t_evals, f_evals) = if layer == 0 {
+                let m_t_evals = match m_t_state {
+                    Interm => {
+                        let (n, d) = &m_t_fsums[m_t_fsums.len() - 2];
+                        let m_t_evals = vec![n[0], n[1], d[0], d[1]];
+                        transcript.write_felt_exts(&m_t_evals)?;
+                        m_t_evals
+                    }
+                    Initial => {
+                        let m_t_evals = vec![m[0], m[1], t[0], t[1]];
+                        transcript.write_felts(&m_t_evals)?;
+                        m_t_evals.into_iter().map_into().collect()
+                    }
+                    Finished => Vec::new(),
                 };
-                let f_evals = if is_proving_f_initial {
-                    let f_fsum_polys = f_sum_check_polys(log2_size);
-                    let f_evals = f_fsum_polys
-                        .iter()
-                        .map(|poly| match poly {
-                            SumCheckPoly::Base(poly) => poly[0],
-                            _ => unreachable!(),
-                        })
-                        .collect_vec();
-                    transcript.write_felts(&f_evals)?;
-                    f_evals.into_iter().map(E::from_base).collect_vec()
-                } else if is_proving_f {
-                    let f_fsum_polys = f_sum_check_polys(log2_size);
-                    let f_evals = f_fsum_polys
-                        .iter()
-                        .map(|poly| match poly {
-                            SumCheckPoly::Extension(poly) => poly[0],
-                            _ => unreachable!(),
-                        })
-                        .collect_vec();
-                    transcript.write_felt_exts(&f_evals)?;
-                    f_evals
-                } else {
-                    Vec::new()
+                let f_evals = match f_state {
+                    Interm => {
+                        let fs = f_fsums.iter().map(|f_fsums| &f_fsums[f_fsums.len() - 2]);
+                        let f_evals = fs.flat_map(|(n, d)| [n[0], n[1], d[0], d[1]]).collect_vec();
+                        transcript.write_felt_exts(&f_evals)?;
+                        f_evals
+                    }
+                    Initial => {
+                        let f_evals = fs.iter().flat_map(|f| [f[0], f[1]]).collect_vec();
+                        transcript.write_felts(&f_evals)?;
+                        f_evals.into_iter().map_into().collect()
+                    }
+                    Finished => Vec::new(),
                 };
                 (vec![], m_t_evals, f_evals)
             } else {
-                let (g, claim, polys) = {
-                    let mut expressions = Vec::new();
-                    let mut claims = Vec::new();
-                    let mut polys = Vec::new();
-                    if is_proving_m_t_initial {
-                        let gamma = &Expression::constant(gamma);
-                        let [m_l, m_r, t_l, t_r] = &array::from_fn(Expression::poly);
-                        expressions.extend([
-                            m_l * (t_r + gamma) + m_r * (t_l + gamma),
-                            (t_l + gamma) * (t_r + gamma),
-                        ]);
-                        claims.extend(m_t_claims.clone());
-                        polys.extend(m_t_sum_check_polys(log2_size));
-                    } else if is_proving_m_t {
-                        let [n_l, n_r, d_l, d_r] = &array::from_fn(Expression::poly);
-                        expressions.extend([n_l * d_r + n_r * d_l, d_l * d_r]);
-                        claims.extend(m_t_claims.clone());
-                        polys.extend(m_t_sum_check_polys(log2_size));
-                    }
-                    if is_proving_f_initial {
-                        let gamma = &Expression::constant(gamma);
-                        expressions.extend((polys.len()..).step_by(2).take(self.num_fs).flat_map(
-                            |offset| {
-                                let [f_l, f_r] =
-                                    &array::from_fn(|idx| Expression::poly(offset + idx));
-                                [(f_r + gamma) + (f_l + gamma), (f_l + gamma) * (f_r + gamma)]
-                            },
-                        ));
-                        claims.extend(f_claims.clone());
-                        polys.extend(f_sum_check_polys(log2_size));
-                    } else if is_proving_f {
-                        expressions.extend((polys.len()..).step_by(4).take(self.num_fs).flat_map(
-                            |offset| {
-                                let [n_l, n_r, d_l, d_r] =
-                                    &array::from_fn(|idx| Expression::poly(offset + idx));
-                                [n_l * d_r + n_r * d_l, d_l * d_r]
-                            },
-                        ));
-                        claims.extend(f_claims.clone());
-                        polys.extend(f_sum_check_polys(log2_size));
-                    }
+                let (g, claim, r) = self.sum_check_relation(
+                    gamma,
+                    layer,
+                    (&m_t_claims, &r_m_t),
+                    (&f_claims, &r_f),
+                    transcript,
+                );
+                let polys = chain![
+                    chain![
+                        m_t_state.is_proving().then(|| m_t_sum_check_polys(layer)),
+                        f_state.is_proving().then(|| f_sum_check_polys(layer))
+                    ]
+                    .flatten(),
+                    [SumCheckPoly::Extension(box_dense_poly(eq_poly(r, E::ONE)))]
+                ];
 
-                    let alpha = transcript.squeeze_challenge();
-                    let eq = Expression::poly(polys.len());
-                    let expression = eq * Expression::distribute_powers(expressions, alpha);
-                    let g = Generic::new(log2_size, &expression);
+                let (_, r_prime, mut evals) = prove_sum_check(&g, claim, polys, transcript)?;
 
-                    let claim = inner_product::<E, E>(&claims, powers(alpha).take(claims.len()));
-
-                    polys.push(SumCheckPoly::Extension(box_dense_poly(eq_poly(&r, E::ONE))));
-
-                    (g, claim, polys)
-                };
-
-                let (_, r_prime, evals) = prove_sum_check(&g, claim, polys, transcript)?;
-
-                let evals = &mut evals.into_iter();
-                let m_t_evals = is_proving_m_t
-                    .then(|| evals.take(4).collect_vec())
+                let m_t_evals = m_t_state
+                    .is_proving()
+                    .then(|| evals.drain(..4).collect_vec())
                     .unwrap_or_default();
-                let f_evals = is_proving_f
-                    .then(|| evals.take(evals.len() - 1).collect_vec())
+                let f_evals = f_state
+                    .is_proving()
+                    .then(|| evals.drain(..evals.len() - 1).collect_vec())
                     .unwrap_or_default();
 
                 transcript.write_felt_exts(&m_t_evals)?;
@@ -292,21 +220,14 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
 
             let mu = transcript.squeeze_challenge();
 
-            if is_proving_m_t {
-                m_t_claims = merge(&m_t_evals, &mu)
+            if m_t_state.is_proving() {
+                m_t_claims = merge(&m_t_evals, &mu);
+                r_m_t = chain![r_prime.clone(), [mu]].collect();
             };
-            if is_proving_f {
-                f_claims = merge(&f_evals, &mu)
+            if f_state.is_proving() {
+                f_claims = merge(&f_evals, &mu);
+                r_f = chain![r_prime.clone(), [mu]].collect();
             };
-
-            r = chain![r_prime, [mu]].collect();
-
-            if is_proving_m_t_initial {
-                r_m_t = r.clone()
-            }
-            if is_proving_f_initial {
-                r_f = r.clone()
-            }
         }
 
         Ok(chain![
@@ -325,126 +246,55 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
         let gamma = transcript.squeeze_challenge();
 
         let mut m_t_claims = if self.log2_t_size == 0 {
-            transcript
-                .read_felts(2)?
-                .into_iter()
-                .map(E::from_base)
-                .collect_vec()
+            transcript.read_felts_as_exts(2)?
         } else {
             transcript.read_felt_exts(2)?
         };
         let mut f_claims = if self.log2_f_size == 0 {
-            transcript
-                .read_felts(self.num_fs)?
-                .into_iter()
-                .map(E::from_base)
-                .collect_vec()
+            transcript.read_felts_as_exts(self.num_fs)?
         } else {
             transcript.read_felt_exts(2 * self.num_fs)?
         };
         let mut r_m_t = Vec::new();
         let mut r_f = Vec::new();
-        let mut r = Vec::new();
-        for log2_size in 0..self.log2_t_size.max(self.log2_f_size) {
-            let is_proving_m_t = log2_size < self.log2_t_size;
-            let is_proving_m_t_initial = log2_size + 1 == self.log2_t_size;
-            let is_proving_f = log2_size < self.log2_f_size;
-            let is_proving_f_initial = log2_size + 1 == self.log2_f_size;
+        for layer in 0..self.log2_t_size.max(self.log2_f_size) {
+            let [m_t_state, f_state] = self.log_up_state(layer);
 
-            let (r_prime, m_t_evals, f_evals) = if log2_size == 0 {
-                let m_t_evals = if is_proving_m_t_initial {
-                    transcript
-                        .read_felts(4)?
-                        .into_iter()
-                        .map(E::from_base)
-                        .collect_vec()
-                } else if is_proving_m_t {
-                    transcript.read_felt_exts(4)?
-                } else {
-                    Vec::new()
+            let (r_prime, m_t_evals, f_evals) = if layer == 0 {
+                let m_t_evals = match m_t_state {
+                    Interm => transcript.read_felt_exts(4)?,
+                    Initial => transcript.read_felts_as_exts(4)?,
+                    Finished => Vec::new(),
                 };
-                let f_evals = if is_proving_f_initial {
-                    transcript
-                        .read_felts(2 * self.num_fs)?
-                        .into_iter()
-                        .map(E::from_base)
-                        .collect_vec()
-                } else if is_proving_f {
-                    transcript.read_felt_exts(4 * self.num_fs)?
-                } else {
-                    Vec::new()
+                let f_evals = match f_state {
+                    Interm => transcript.read_felt_exts(4 * self.num_fs)?,
+                    Initial => transcript.read_felts_as_exts(2 * self.num_fs)?,
+                    Finished => Vec::new(),
                 };
                 (Vec::new(), m_t_evals, f_evals)
             } else {
-                let (g, claim) = {
-                    let mut expressions = Vec::new();
-                    let mut claims = Vec::new();
-                    let mut offset = 0;
-                    if is_proving_m_t_initial {
-                        let gamma = &Expression::constant(gamma);
-                        let [m_l, m_r, t_l, t_r] = &array::from_fn(Expression::poly);
-                        expressions.extend([
-                            m_l * (t_r + gamma) + m_r * (t_l + gamma),
-                            (t_l + gamma) * (t_r + gamma),
-                        ]);
-                        claims.extend(m_t_claims.clone());
-                        offset += 4;
-                    } else if is_proving_m_t {
-                        let [n_l, n_r, d_l, d_r] = &array::from_fn(Expression::poly);
-                        expressions.extend([n_l * d_r + n_r * d_l, d_l * d_r]);
-                        claims.extend(m_t_claims.clone());
-                        offset += 4;
-                    }
-                    if is_proving_f_initial {
-                        let gamma = &Expression::constant(gamma);
-                        expressions.extend((offset..).step_by(2).take(self.num_fs).flat_map(
-                            |offset| {
-                                let [f_l, f_r] =
-                                    &array::from_fn(|idx| Expression::poly(offset + idx));
-                                [(f_r + gamma) + (f_l + gamma), (f_l + gamma) * (f_r + gamma)]
-                            },
-                        ));
-                        claims.extend(f_claims.clone());
-                        offset += 2 * self.num_fs;
-                    } else if is_proving_f {
-                        expressions.extend((offset..).step_by(4).take(self.num_fs).flat_map(
-                            |offset| {
-                                let [n_l, n_r, d_l, d_r] =
-                                    &array::from_fn(|idx| Expression::poly(offset + idx));
-                                [n_l * d_r + n_r * d_l, d_l * d_r]
-                            },
-                        ));
-                        claims.extend(f_claims.clone());
-                        offset += 4 * self.num_fs;
-                    }
-
-                    let alpha = transcript.squeeze_challenge();
-                    let eq = Expression::poly(offset);
-                    let expression = eq * Expression::distribute_powers(expressions, alpha);
-                    let g = Generic::new(log2_size, &expression);
-
-                    let claim = inner_product::<E, E>(&claims, powers(alpha).take(claims.len()));
-
-                    (g, claim)
-                };
+                let (g, claim, r) = self.sum_check_relation(
+                    gamma,
+                    layer,
+                    (&m_t_claims, &r_m_t),
+                    (&f_claims, &r_f),
+                    transcript,
+                );
 
                 let (sub_claim, r_prime) = verify_sum_check(&g, claim, transcript)?;
 
-                let m_t_evals = if is_proving_m_t {
-                    transcript.read_felt_exts(4)?
-                } else {
-                    Vec::new()
+                let m_t_evals = match m_t_state {
+                    Interm | Initial => transcript.read_felt_exts(4)?,
+                    Finished => Vec::new(),
                 };
-                let f_evals = if is_proving_f_initial {
-                    transcript.read_felt_exts(2 * self.num_fs)?
-                } else if is_proving_f {
-                    transcript.read_felt_exts(4 * self.num_fs)?
-                } else {
-                    Vec::new()
+                let f_evals = match f_state {
+                    Interm => transcript.read_felt_exts(4 * self.num_fs)?,
+                    Initial => transcript.read_felt_exts(2 * self.num_fs)?,
+                    Finished => Vec::new(),
                 };
 
                 let final_eval = {
-                    let eq_eval = eq_eval([r.as_slice(), r_prime.as_slice()]);
+                    let eq_eval = eq_eval([r, &r_prime]);
                     let evals = chain![&m_t_evals, &f_evals, [&eq_eval]].collect_vec();
                     g.expression().evaluate(
                         &|constant| constant,
@@ -463,21 +313,14 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
 
             let mu = transcript.squeeze_challenge();
 
-            if is_proving_m_t {
-                m_t_claims = merge(&m_t_evals, &mu)
+            if m_t_state.is_proving() {
+                m_t_claims = merge(&m_t_evals, &mu);
+                r_m_t = chain![r_prime.clone(), [mu]].collect();
             };
-            if is_proving_f {
-                f_claims = merge(&f_evals, &mu)
+            if f_state.is_proving() {
+                f_claims = merge(&f_evals, &mu);
+                r_f = chain![r_prime.clone(), [mu]].collect();
             };
-
-            r = chain![r_prime, [mu]].collect();
-
-            if is_proving_m_t_initial {
-                r_m_t = r.clone()
-            }
-            if is_proving_f_initial {
-                r_f = r.clone()
-            }
         }
 
         Ok(chain![
@@ -486,6 +329,108 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
         ]
         .map(|(r, value)| vec![EvalClaim::new(r, value)])
         .collect())
+    }
+}
+
+impl LogUpNode {
+    pub fn new(log2_t_size: usize, log2_f_size: usize, num_fs: usize) -> Self {
+        assert_ne!(num_fs, 0);
+
+        Self {
+            log2_t_size,
+            log2_f_size,
+            num_fs,
+        }
+    }
+
+    fn log_up_state(&self, layer: usize) -> [LogUpState; 2] {
+        [self.log2_t_size, self.log2_f_size].map(|log2_size| match (layer + 1).cmp(&log2_size) {
+            Less => Interm,
+            Equal => Initial,
+            Greater => Finished,
+        })
+    }
+
+    fn sum_check_relation<'a, F, E>(
+        &self,
+        gamma: E,
+        layer: usize,
+        (m_t_claims, r_m_t): (&[E], &'a [E]),
+        (f_claims, r_f): (&[E], &'a [E]),
+        transcript: &mut (impl Transcript<F, E> + ?Sized),
+    ) -> (Generic<F, E>, E, &'a [E])
+    where
+        F: Field,
+        E: ExtensionField<F>,
+    {
+        let [m_t_state, f_state] = self.log_up_state(layer);
+
+        let mut pairs = Vec::new();
+        let mut claims = Vec::new();
+        let mut offset = 0;
+        let mut r = [].as_slice();
+        if m_t_state.is_proving() {
+            let m_t_pair = if matches!(m_t_state, Interm) {
+                array::from_fn(Expression::poly)
+            } else {
+                let gamma = &Expression::constant(gamma);
+                let [m_l, m_r, t_l, t_r] = array::from_fn(Expression::poly);
+                [m_l, m_r, t_l + gamma, t_r + gamma]
+            };
+            pairs.push(m_t_pair);
+            claims.extend(m_t_claims);
+            offset += 4;
+            r = r_m_t;
+        }
+        if f_state.is_proving() {
+            let f_pairs = if matches!(f_state, Interm) {
+                (offset..)
+                    .step_by(4)
+                    .take(self.num_fs)
+                    .map(|offset| array::from_fn(|idx| Expression::poly(offset + idx)))
+                    .collect_vec()
+            } else {
+                let one = &Expression::constant(E::ONE);
+                let gamma = &Expression::constant(gamma);
+                (offset..)
+                    .step_by(2)
+                    .take(self.num_fs)
+                    .map(|offset| {
+                        let [f_l, f_r] = array::from_fn(|idx| Expression::poly(offset + idx));
+                        [one.clone(), one.clone(), f_l + gamma, f_r + gamma]
+                    })
+                    .collect_vec()
+            };
+            pairs.extend(f_pairs);
+            claims.extend(f_claims);
+            offset += if matches!(f_state, Interm) { 4 } else { 2 } * self.num_fs;
+            r = r_f;
+        }
+
+        let alpha = transcript.squeeze_challenge();
+        let g = {
+            let expressions = pairs
+                .iter()
+                .flat_map(|[n_l, n_r, d_l, d_r]| [n_l * d_r + n_r * d_l, d_l * d_r]);
+            let eq = Expression::poly(offset);
+            let expression = eq * Expression::distribute_powers(expressions, alpha);
+            Generic::new(layer, &expression)
+        };
+        let claim = inner_product::<E, E>(&claims, powers(alpha).take(claims.len()));
+
+        (g, claim, r)
+    }
+}
+
+enum LogUpState {
+    Interm,
+    Initial,
+    Finished,
+}
+
+impl LogUpState {
+    fn is_proving(&self) -> bool {
+        matches!(self, Interm | Initial)
     }
 }
 
@@ -535,7 +480,7 @@ fn fractional_sums<F: Field, E: ExtensionField<F>>(
                     let n_r = numer[mid + b];
                     let d_l = denom[b];
                     let d_r = denom[mid + b];
-                    (E::from_base(d_r * n_l + d_l * n_r), E::from_base(d_l * d_r))
+                    (E::from(d_r * n_l + d_l * n_r), E::from(d_l * d_r))
                 })
                 .unzip(),
             (None, Some(gamma)) => (0..mid)
@@ -551,7 +496,7 @@ fn fractional_sums<F: Field, E: ExtensionField<F>>(
                 .map(|b| {
                     let d_l = denom[b];
                     let d_r = denom[mid + b];
-                    (E::from_base(d_r + d_l), E::from_base(d_l * d_r))
+                    (E::from(d_r + d_l), E::from(d_l * d_r))
                 })
                 .unzip(),
         }
@@ -597,8 +542,8 @@ pub mod test {
             let m = circuit.insert(InputNode::new(log2_t_size, 1));
             let t = circuit.insert(InputNode::new(log2_t_size, 1));
             let fs = [(); N].map(|_| circuit.insert(InputNode::new(log2_f_size, 1)));
-            let logup = circuit.insert(LogUpNode::new(log2_t_size, log2_f_size, N));
-            chain![[m, t], fs].for_each(|from| circuit.connect(from, logup));
+            let log_up = circuit.insert(LogUpNode::new(log2_t_size, log2_f_size, N));
+            chain![[m, t], fs].for_each(|from| circuit.connect(from, log_up));
             circuit
         };
 
