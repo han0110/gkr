@@ -7,7 +7,7 @@ use crate::{
     poly::{box_dense_poly, eq_eval, eq_poly, evaluate, repeated_dense_poly, BoxMultilinearPoly},
     sum_check::{
         err_unmatched_evaluation, generic::Generic, prove_sum_check, quadratic::Quadratic,
-        verify_sum_check, SumCheckPoly,
+        verify_sum_check, SumCheckFunction, SumCheckPoly,
     },
     transcript::{Transcript, TranscriptRead, TranscriptWrite},
     util::{
@@ -83,7 +83,7 @@ impl<F: PrimeField, E: ExtensionField<F>> Node<F, E> for FftNode<F, E> {
             .unzip::<_, _, Vec<_>, Vec<_>>();
 
         let (r_x, input_r_x, w_r_xs) = {
-            let g = Quadratic::new(self.log2_size);
+            let g = Quadratic::new(self.log2_size, vec![(None, 0, 1)]);
             let w = box_dense_poly(ws.par_iter().cloned().hada_sum());
             let polys = [SumCheckPoly::Base(inputs[0]), SumCheckPoly::Extension(&w)];
             let (_, r_x, evals) = prove_sum_check(&g, claim.value, polys, transcript)?;
@@ -104,7 +104,7 @@ impl<F: PrimeField, E: ExtensionField<F>> Node<F, E> for FftNode<F, E> {
         transcript: &mut dyn TranscriptRead<F, E>,
     ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
         let (r_x, input_r_x, w_r_xs) = {
-            let g = Quadratic::new(self.log2_size);
+            let g = Quadratic::new(self.log2_size, vec![(None, 0, 1)]);
             let (sub_claim, r_x) = verify_sum_check(&g, claim.value, transcript)?;
             let input_r_x = transcript.read_felt_ext()?;
             let w_r_xs = transcript.read_felt_exts(claim.points.len())?;
@@ -283,17 +283,9 @@ impl<F: PrimeField, E: ExtensionField<F>> FftNode<F, E> {
         let eq_eval = eq_eval([r_x, r_x_prime]);
         let omega = squares(self.omega).nth(self.log2_size - r_x.len()).unwrap();
         let omega_eval = omega_eval(omega, r_x_prime);
-        g.expression().evaluate(
-            &|constant| constant,
-            &|poly| match poly {
-                0 => eq_eval,
-                1 => omega_eval,
-                poly => w_interm_r_x_primes[poly - 2],
-            },
-            &|value| -value,
-            &|lhs, rhs| lhs + rhs,
-            &|lhs, rhs| lhs * rhs,
-        )
+        let evals =
+            chain![[eq_eval, omega_eval], w_interm_r_x_primes.iter().copied()].collect_vec();
+        g.evaluate(&evals)
     }
 
     fn wiring_gkr_initial_evals(&self, alphas: &[E]) -> Vec<E> {

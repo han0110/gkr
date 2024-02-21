@@ -1,9 +1,10 @@
 use crate::{
     circuit::node::{log_up::LogUpState::*, CombinedEvalClaim, EvalClaim, Node},
     izip_par,
-    poly::{box_dense_poly, eq_eval, eq_poly, merge, BoxMultilinearPoly, MultilinearPoly},
+    poly::{box_dense_poly, merge, BoxMultilinearPoly, MultilinearPoly},
     sum_check::{
-        err_unmatched_evaluation, generic::Generic, prove_sum_check, verify_sum_check, SumCheckPoly,
+        err_unmatched_evaluation, generic::Generic, prove_sum_check, verify_sum_check,
+        SumCheckFunction, SumCheckPoly,
     },
     transcript::{Transcript, TranscriptRead, TranscriptWrite},
     util::{
@@ -185,7 +186,7 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
                 };
                 (vec![], m_t_evals, f_evals)
             } else {
-                let (g, claim, r) = self.sum_check_relation(
+                let (g, claim) = self.sum_check_relation::<_, _, true>(
                     gamma,
                     layer,
                     (&m_t_claims, &r_m_t),
@@ -193,13 +194,10 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
                     transcript,
                 );
                 let polys = chain![
-                    chain![
-                        m_t_state.is_proving().then(|| m_t_sum_check_polys(layer)),
-                        f_state.is_proving().then(|| f_sum_check_polys(layer))
-                    ]
-                    .flatten(),
-                    [SumCheckPoly::Extension(box_dense_poly(eq_poly(r, E::ONE)))]
-                ];
+                    m_t_state.is_proving().then(|| m_t_sum_check_polys(layer)),
+                    f_state.is_proving().then(|| f_sum_check_polys(layer)),
+                ]
+                .flatten();
 
                 let (_, r_prime, mut evals) = prove_sum_check(&g, claim, polys, transcript)?;
 
@@ -209,7 +207,7 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
                     .unwrap_or_default();
                 let f_evals = f_state
                     .is_proving()
-                    .then(|| evals.drain(..evals.len() - 1).collect_vec())
+                    .then(|| evals.drain(..).collect_vec())
                     .unwrap_or_default();
 
                 transcript.write_felt_exts(&m_t_evals)?;
@@ -273,7 +271,7 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
                 };
                 (Vec::new(), m_t_evals, f_evals)
             } else {
-                let (g, claim, r) = self.sum_check_relation(
+                let (g, claim) = self.sum_check_relation::<_, _, false>(
                     gamma,
                     layer,
                     (&m_t_claims, &r_m_t),
@@ -293,18 +291,7 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
                     Finished => Vec::new(),
                 };
 
-                let final_eval = {
-                    let eq_eval = eq_eval([r, &r_prime]);
-                    let evals = chain![&m_t_evals, &f_evals, [&eq_eval]].collect_vec();
-                    g.expression().evaluate(
-                        &|constant| constant,
-                        &|poly| *evals[poly],
-                        &|value| -value,
-                        &|a, b| a + b,
-                        &|a, b| a * b,
-                    )
-                };
-                if sub_claim != final_eval {
+                if sub_claim != g.evaluate(&chain![&m_t_evals, &f_evals].copied().collect_vec()) {
                     return Err(err_unmatched_evaluation());
                 }
 
@@ -351,14 +338,14 @@ impl LogUpNode {
         })
     }
 
-    fn sum_check_relation<'a, F, E>(
+    fn sum_check_relation<F, E, const IS_PROVING: bool>(
         &self,
         gamma: E,
         layer: usize,
-        (m_t_claims, r_m_t): (&[E], &'a [E]),
-        (f_claims, r_f): (&[E], &'a [E]),
+        (m_t_claims, r_m_t): (&[E], &[E]),
+        (f_claims, r_f): (&[E], &[E]),
         transcript: &mut (impl Transcript<F, E> + ?Sized),
-    ) -> (Generic<F, E>, E, &'a [E])
+    ) -> (Generic<F, E>, E)
     where
         F: Field,
         E: ExtensionField<F>,
@@ -403,7 +390,6 @@ impl LogUpNode {
             };
             pairs.extend(f_pairs);
             claims.extend(f_claims);
-            offset += if matches!(f_state, Interm) { 4 } else { 2 } * self.num_fs;
             r = r_f;
         }
 
@@ -412,13 +398,12 @@ impl LogUpNode {
             let expressions = pairs
                 .iter()
                 .flat_map(|[n_l, n_r, d_l, d_r]| [n_l * d_r + n_r * d_l, d_l * d_r]);
-            let eq = Expression::poly(offset);
-            let expression = eq * Expression::distribute_powers(expressions, alpha);
-            Generic::new(layer, &expression)
+            let expression = Expression::distribute_powers(expressions, alpha);
+            Generic::new(layer, &expression).mul_by_eq(r, IS_PROVING)
         };
         let claim = inner_product::<E, E>(&claims, powers(alpha).take(claims.len()));
 
-        (g, claim, r)
+        (g, claim)
     }
 }
 
@@ -524,15 +509,15 @@ pub mod test {
 
     #[test]
     fn single_input() {
-        run_circuit::<Goldilocks, GoldilocksExt2>(circuit::<_, _, 1>);
+        run_circuit::<Goldilocks, GoldilocksExt2>(log_up_circuit::<_, _, 1>);
     }
 
     #[test]
     fn multiple_input() {
-        run_circuit::<Goldilocks, GoldilocksExt2>(circuit::<_, _, 3>);
+        run_circuit::<Goldilocks, GoldilocksExt2>(log_up_circuit::<_, _, 3>);
     }
 
-    fn circuit<F: Field, E: ExtensionField<F>, const N: usize>(
+    fn log_up_circuit<F: Field, E: ExtensionField<F>, const N: usize>(
         log2_f_size: usize,
         mut rng: &mut impl RngCore,
     ) -> TestData<F, E> {

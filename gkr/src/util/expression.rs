@@ -65,6 +65,18 @@ impl<F: Clone, K: Clone> Expression<F, K> {
     }
 }
 
+impl<F: Field, K: Clone> Expression<F, K> {
+    pub fn evaluate_felt<E: ExtensionField<F>>(&self, data: &impl Fn(K) -> E) -> E {
+        self.evaluate(
+            &|constant| E::from(constant),
+            data,
+            &|value| -value,
+            &|a, b| a + b,
+            &|a, b| a * b,
+        )
+    }
+}
+
 impl<F> Expression<F, usize> {
     pub fn poly(poly: usize) -> Self {
         Self::Data(poly)

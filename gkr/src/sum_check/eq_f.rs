@@ -9,33 +9,56 @@ use crate::{
     transcript::{TranscriptRead, TranscriptWrite},
     util::{
         arithmetic::{BatchInvert, ExtensionField, Field},
-        Itertools,
+        chain, Itertools,
     },
     Error,
 };
 use rayon::prelude::*;
 use std::mem;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EqF<F> {
     r: Vec<F>,
     r_inv: Vec<F>,
+    one_minus_r_inv: Vec<F>,
     subsets: Vec<Vec<F>>,
 }
 
 impl<F: Field> EqF<F> {
     pub fn new(r: &[F], is_proving: bool) -> Self {
         let subsets = is_proving.then(|| eq_subsets(r)).unwrap_or_default();
-        let r_inv = {
-            let mut r_inv = r.to_vec();
-            r_inv.batch_invert();
-            r_inv
-        };
+        let mut r_inv = r.to_vec();
+        let mut one_minus_r_inv = r.iter().map(|r_i| F::ONE - r_i).collect_vec();
+        chain![&mut r_inv, &mut one_minus_r_inv].batch_invert();
         Self {
             r: r.to_vec(),
             r_inv,
+            one_minus_r_inv,
             subsets,
         }
+    }
+
+    pub fn r_i(&self, round: usize) -> F {
+        self.r[round]
+    }
+
+    pub fn r_i_inv(&self, round: usize) -> F {
+        self.r_inv[round]
+    }
+    pub fn one_minus_r_i_inv(&self, round: usize) -> F {
+        self.one_minus_r_inv[round]
+    }
+
+    pub fn subset_i(&self, round: usize) -> &[F] {
+        &self.subsets[round]
+    }
+
+    pub fn eval_0(&self, round: usize, claim: F, eval_1: F) -> F {
+        (claim - self.r_i(round) * eval_1) * self.one_minus_r_i_inv(round)
+    }
+
+    pub fn eval_1(&self, round: usize, claim: F, eval_0: F) -> F {
+        (claim - (F::ONE - self.r_i(round)) * eval_0) * self.r_i_inv(round)
     }
 }
 
@@ -48,7 +71,32 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for EqF<E> {
         1
     }
 
+    fn evaluate(&self, evals: &[E]) -> E {
+        evals[0]
+    }
+
+    #[cfg(any(test, feature = "sanity-check"))]
     fn compute_sum(
+        &self,
+        round: usize,
+        polys: &[SumCheckPoly<F, E, impl MultilinearPoly<F, E>, impl MultilinearPoly<E, E>>],
+    ) -> E {
+        assert_eq!(polys.len(), 1);
+
+        let r_i = self.r_i(round);
+        let subset_i = self.subset_i(round);
+        let f = &polys[0];
+
+        op_sum_check_poly!(|f| (0..f.len())
+            .into_par_iter()
+            .map(|idx| {
+                let scalar = subset_i[idx >> 1] * if idx & 1 == 0 { E::ONE - r_i } else { r_i };
+                scalar * f[idx]
+            })
+            .sum::<E>())
+    }
+
+    fn compute_round_poly(
         &self,
         round: usize,
         claim: E,
@@ -56,27 +104,11 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for EqF<E> {
     ) -> Vec<E> {
         assert_eq!(polys.len(), 1);
 
-        let r_i = self.r[round];
-        let r_i_inv = self.r_inv[round];
-        let subset_i = &self.subsets[round];
-        let f = &polys[0];
+        #[cfg(feature = "sanity-check")]
+        assert_eq!(self.compute_sum(round, polys), claim);
 
-        if cfg!(feature = "sanity-check") {
-            let one_minus_r_i = E::ONE - r_i;
-            assert_eq!(
-                op_sum_check_poly!(|f| {
-                    (0..f.len())
-                        .into_par_iter()
-                        .map(|idx| {
-                            subset_i[idx >> 1]
-                                * f[idx]
-                                * if idx & 1 == 0 { one_minus_r_i } else { r_i }
-                        })
-                        .sum::<E>()
-                }),
-                claim
-            )
-        }
+        let subset_i = self.subset_i(round);
+        let f = &polys[0];
 
         let eval_0 = op_sum_check_poly!(|f| {
             (0..f.len())
@@ -86,12 +118,12 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for EqF<E> {
                 .map(|idx| subset_i[idx >> 1] * f[idx])
                 .sum()
         });
-        let eval_1 = (claim - (E::ONE - r_i) * eval_0) * r_i_inv;
+        let eval_1 = self.eval_1(round, claim, eval_0);
 
         vec![eval_0, eval_1 - eval_0]
     }
 
-    fn write_sum(
+    fn write_round_poly(
         &self,
         _: usize,
         sum: &[E],
@@ -101,18 +133,16 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for EqF<E> {
         Ok(())
     }
 
-    fn read_sum(
+    fn read_round_poly(
         &self,
         round: usize,
         claim: E,
         transcript: &mut (impl TranscriptRead<F, E> + ?Sized),
     ) -> Result<Vec<E>, Error> {
-        let r_i = self.r[round];
-        let r_i_inv = self.r_inv[round];
-        let mut sums = vec![E::ZERO; 2];
-        sums[0] = transcript.read_felt_ext()?;
-        sums[1] = (claim - (E::ONE - r_i) * sums[0]) * r_i_inv - sums[0];
-        Ok(sums)
+        let mut sum = vec![E::ZERO; 2];
+        sum[0] = transcript.read_felt_ext()?;
+        sum[1] = self.eval_1(round, claim, sum[0]) - sum[0];
+        Ok(sum)
     }
 }
 
@@ -121,18 +151,18 @@ fn eq_subsets<F: Field>(r: &[F]) -> Vec<Vec<F>> {
         .iter()
         .enumerate()
         .rev()
-        .scan(vec![F::ONE], |subset, (idx, r_i)| {
+        .scan(vec![F::ONE], |subset_i, (idx, r_i)| {
             if idx == 0 {
-                mem::take(subset)
+                mem::take(subset_i)
             } else {
                 let one_minus_r_i = F::ONE - r_i;
                 mem::replace(
-                    subset,
-                    (0..subset.len() << 1)
+                    subset_i,
+                    (0..subset_i.len() << 1)
                         .into_par_iter()
                         .with_min_len(64)
                         .map(|idx| {
-                            subset[idx >> 1] * if idx & 1 == 0 { one_minus_r_i } else { *r_i }
+                            subset_i[idx >> 1] * if idx & 1 == 0 { one_minus_r_i } else { *r_i }
                         })
                         .collect(),
                 )
@@ -147,35 +177,19 @@ fn eq_subsets<F: Field>(r: &[F]) -> Vec<Vec<F>> {
 #[cfg(test)]
 mod test {
     use crate::{
-        poly::{box_dense_poly, MultilinearPoly},
-        sum_check::{eq_f::EqF, prove_sum_check, verify_sum_check, SumCheckPoly},
-        transcript::StdRngTranscript,
-        util::dev::{rand_vec, seeded_std_rng},
+        poly::box_dense_poly,
+        sum_check::{eq_f::EqF, test::run_sum_check, SumCheckPoly},
+        util::dev::rand_vec,
     };
     use goldilocks::{Goldilocks, GoldilocksExt2};
 
     #[test]
     fn eq_f() {
-        let mut rng = seeded_std_rng();
-        for num_vars in 1..10 {
-            let f = box_dense_poly(rand_vec::<Goldilocks>(1 << num_vars, &mut rng));
-            let r = rand_vec::<GoldilocksExt2>(num_vars, &mut rng);
-            let claim = f.evaluate(&r);
-
-            let proof = {
-                let g = EqF::new(&r, true);
-                let mut transcript = StdRngTranscript::default();
-                prove_sum_check(&g, claim, SumCheckPoly::bases([&f]), &mut transcript).unwrap();
-                transcript.into_proof()
-            };
-
-            let (sub_claim, r_prime) = {
-                let g = EqF::new(&r, false);
-                let mut transcript = StdRngTranscript::from_proof(&proof);
-                verify_sum_check::<Goldilocks, _>(&g, claim, &mut transcript).unwrap()
-            };
-
-            assert_eq!(sub_claim, f.evaluate(&r_prime))
-        }
+        run_sum_check::<Goldilocks, GoldilocksExt2, _>(|num_vars, mut rng| {
+            let r = rand_vec(num_vars, &mut rng);
+            let g = EqF::new(&r, true);
+            let f = box_dense_poly(rand_vec(1 << num_vars, &mut rng));
+            (g, vec![SumCheckPoly::Base(f)])
+        });
     }
 }
