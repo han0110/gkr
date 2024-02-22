@@ -1,3 +1,5 @@
+#![allow(clippy::len_without_is_empty)]
+
 use crate::util::arithmetic::{ExtensionField, Field};
 use rayon::prelude::*;
 use std::{fmt::Debug, ops::Index};
@@ -20,7 +22,7 @@ pub type DynMultilinearPolyOwned<'a, F> = dyn MultilinearPolyOwned<F> + 'a;
 
 pub type BoxMultilinearPolyOwned<'a, F> = Box<DynMultilinearPolyOwned<'a, F>>;
 
-#[allow(clippy::len_without_is_empty)]
+#[auto_impl::auto_impl(&, Box)]
 pub trait MultilinearPoly<F, E = F>: Debug + Send + Sync + Index<usize, Output = F> {
     fn num_vars(&self) -> usize;
 
@@ -49,7 +51,13 @@ pub trait MultilinearPoly<F, E = F>: Debug + Send + Sync + Index<usize, Output =
     }
 
     fn clone_box(&self) -> BoxMultilinearPoly<F, E>;
+}
 
+pub trait MultilinearPolyOwned<F>: MultilinearPoly<F> {
+    fn fix_var_in_place(&mut self, x_i: &F);
+}
+
+pub trait MultilinearPolyExt<F, E = F>: MultilinearPoly<F, E> {
     fn boxed<'a>(self) -> BoxMultilinearPoly<'a, F, E>
     where
         Self: 'a + Sized,
@@ -65,9 +73,7 @@ pub trait MultilinearPoly<F, E = F>: Debug + Send + Sync + Index<usize, Output =
     }
 }
 
-pub trait MultilinearPolyOwned<F>: MultilinearPoly<F> {
-    fn fix_var_in_place(&mut self, x_i: &F);
-}
+impl<F, E, P: MultilinearPoly<F, E>> MultilinearPolyExt<F, E> for P {}
 
 pub fn evaluate<F: Field, E: ExtensionField<F>>(evals: &[F], x: &[E]) -> E {
     assert_eq!(evals.len(), 1 << x.len());
@@ -85,8 +91,8 @@ pub fn merge<F: Field, E: ExtensionField<F>>(evals: &[F], x_i: &E) -> Vec<E> {
     evals.par_chunks(2).with_min_len(64).map(merge).collect()
 }
 
-macro_rules! forward_impl {
-    (<$($generics:tt),*>, $ext:tt, $type:ty $(, { $($custom:tt)* })?) => {
+macro_rules! impl_index {
+    (<$($generics:tt),*>, $type:ty) => {
         impl<$($generics),*> Index<usize> for $type {
             type Output = F;
 
@@ -94,51 +100,14 @@ macro_rules! forward_impl {
                 &(**self)[index]
             }
         }
-
-        impl<$($generics),*> MultilinearPoly<F, $ext> for $type {
-            fn clone_box(&self) -> BoxMultilinearPoly<F, $ext> {
-                (**self).clone_box()
-            }
-
-            fn num_vars(&self) -> usize {
-                (**self).num_vars()
-            }
-
-            fn len(&self) -> usize {
-                (**self).len()
-            }
-
-            fn fix_var(&self, x_i: &$ext) -> BoxMultilinearPolyOwned<'static, $ext> {
-                (**self).fix_var(x_i)
-            }
-
-            fn evaluate(&self, x: &[$ext]) -> $ext {
-                (**self).evaluate(x)
-            }
-
-            fn as_dense(&self) -> Option<&[F]> {
-                (**self).as_dense()
-            }
-
-            fn to_dense(&self) -> Vec<F>
-            where
-                F: Send + Sync + Copy,
-            {
-                (**self).to_dense()
-            }
-
-            $($($custom)*)?
-        }
     };
 }
 
-forward_impl!(<'a, F, E>, E, &DynMultilinearPoly<'a, F, E>);
-forward_impl!(<'a, F, E>, E, BoxMultilinearPoly<'a, F, E>, {
-    fn boxed<'b>(self) -> BoxMultilinearPoly<'b, F, E> where Self: 'b { self }
-});
-forward_impl!(<'a, F, E>, E, &BoxMultilinearPoly<'a, F, E>);
-forward_impl!(<'a, F>, F, BoxMultilinearPolyOwned<'a, F>);
-forward_impl!(<'a, F>, F, &BoxMultilinearPolyOwned<'a, F>);
+impl_index!(<'a, F, E>, &DynMultilinearPoly<'a, F, E>);
+impl_index!(<'a, F, E>, BoxMultilinearPoly<'a, F, E>);
+impl_index!(<'a, F, E>, &BoxMultilinearPoly<'a, F, E>);
+impl_index!(<'a, F>, BoxMultilinearPolyOwned<'a, F>);
+impl_index!(<'a, F>, &BoxMultilinearPolyOwned<'a, F>);
 
 #[cfg(test)]
 pub(crate) mod test {

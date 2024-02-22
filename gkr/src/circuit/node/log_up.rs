@@ -16,7 +16,7 @@ use crate::{
     Error,
 };
 use rayon::prelude::*;
-use std::{array, cmp::Ordering::*, iter, ops::Index};
+use std::{array::from_fn, cmp::Ordering::*, iter, ops::Index};
 
 #[derive(Clone, Debug)]
 pub struct LogUpNode {
@@ -358,10 +358,10 @@ impl LogUpNode {
         let mut r = [].as_slice();
         if m_t_state.is_proving() {
             let m_t_pair = if matches!(m_t_state, Interm) {
-                array::from_fn(Expression::poly)
+                from_fn(Expression::poly)
             } else {
                 let gamma = &Expression::constant(gamma);
-                let [m_l, m_r, t_l, t_r] = array::from_fn(Expression::poly);
+                let [m_l, m_r, t_l, t_r] = from_fn(Expression::poly);
                 [m_l, m_r, t_l + gamma, t_r + gamma]
             };
             pairs.push(m_t_pair);
@@ -374,7 +374,7 @@ impl LogUpNode {
                 (offset..)
                     .step_by(4)
                     .take(self.num_fs)
-                    .map(|offset| array::from_fn(|idx| Expression::poly(offset + idx)))
+                    .map(|offset| from_fn(|idx| Expression::poly(offset + idx)))
                     .collect_vec()
             } else {
                 let one = &Expression::constant(E::ONE);
@@ -383,7 +383,7 @@ impl LogUpNode {
                     .step_by(2)
                     .take(self.num_fs)
                     .map(|offset| {
-                        let [f_l, f_r] = array::from_fn(|idx| Expression::poly(offset + idx));
+                        let [f_l, f_r] = from_fn(|idx| Expression::poly(offset + idx));
                         [one.clone(), one.clone(), f_l + gamma, f_r + gamma]
                     })
                     .collect_vec()
@@ -407,6 +407,7 @@ impl LogUpNode {
     }
 }
 
+#[derive(Debug)]
 enum LogUpState {
     Interm,
     Initial,

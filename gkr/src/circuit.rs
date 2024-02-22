@@ -1,5 +1,8 @@
 use crate::{
-    circuit::{dag::DirectedAcyclicGraph, node::Node},
+    circuit::{
+        dag::DirectedAcyclicGraph,
+        node::{Node, NodeExt},
+    },
     poly::BoxMultilinearPoly,
     util::{
         arithmetic::{ExtensionField, Field},

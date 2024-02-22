@@ -1,7 +1,7 @@
 use crate::{
     poly::{
         evaluate, merge, BoxMultilinearPoly, BoxMultilinearPolyOwned, MultilinearPoly,
-        MultilinearPolyOwned,
+        MultilinearPolyExt, MultilinearPolyOwned,
     },
     util::arithmetic::{ExtensionField, Field},
 };

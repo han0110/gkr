@@ -1,6 +1,5 @@
 use crate::{
-    poly::MultilinearPoly,
-    sum_check::{eq_f::EqF, op_sum_check_polys, SumCheckFunction, SumCheckPoly},
+    sum_check::{eq_f::EqF, op_sum_check_polys, BoxSumCheckPoly, SumCheckFunction},
     transcript::{TranscriptRead, TranscriptWrite},
     util::{
         arithmetic::{ExtensionField, Field},
@@ -37,11 +36,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Quadratic<E> {
     }
 
     #[cfg(any(test, feature = "sanity-check"))]
-    fn compute_sum(
-        &self,
-        round: usize,
-        polys: &[SumCheckPoly<F, E, impl MultilinearPoly<F, E>, impl MultilinearPoly<E, E>>],
-    ) -> E {
+    fn compute_sum(&self, round: usize, polys: &[BoxSumCheckPoly<F, E>]) -> E {
         if let Some(eq) = self.eq() {
             let r_i = eq.r_i(round);
             let subset_i = eq.subset_i(round);
@@ -87,7 +82,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Quadratic<E> {
         &self,
         round: usize,
         claim: E,
-        polys: &[SumCheckPoly<F, E, impl MultilinearPoly<F, E>, impl MultilinearPoly<E, E>>],
+        polys: &[BoxSumCheckPoly<F, E>],
     ) -> Vec<E> {
         #[cfg(feature = "sanity-check")]
         assert_eq!(self.compute_sum(round, polys), claim);
@@ -151,7 +146,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Quadratic<E> {
         &self,
         _: usize,
         sum: &[E],
-        transcript: &mut (impl TranscriptWrite<F, E> + ?Sized),
+        transcript: &mut dyn TranscriptWrite<F, E>,
     ) -> Result<(), Error> {
         transcript.write_felt_ext(&sum[0])?;
         transcript.write_felt_ext(&sum[2])?;
@@ -162,7 +157,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Quadratic<E> {
         &self,
         round: usize,
         claim: E,
-        transcript: &mut (impl TranscriptRead<F, E> + ?Sized),
+        transcript: &mut dyn TranscriptRead<F, E>,
     ) -> Result<Vec<E>, Error> {
         let mut sum = vec![E::ZERO; 3];
         sum[0] = transcript.read_felt_ext()?;
