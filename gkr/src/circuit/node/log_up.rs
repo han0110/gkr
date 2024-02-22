@@ -16,7 +16,7 @@ use crate::{
     Error,
 };
 use rayon::prelude::*;
-use std::{array, cmp::Ordering::*, iter, ops::Index};
+use std::{array::from_fn, cmp::Ordering::*, iter, ops::Index};
 
 #[derive(Clone, Debug)]
 pub struct LogUpNode {
@@ -243,16 +243,7 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
     ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
         let gamma = transcript.squeeze_challenge();
 
-        let mut m_t_claims = if self.log2_t_size == 0 {
-            transcript.read_felts_as_exts(2)?
-        } else {
-            transcript.read_felt_exts(2)?
-        };
-        let mut f_claims = if self.log2_f_size == 0 {
-            transcript.read_felts_as_exts(self.num_fs)?
-        } else {
-            transcript.read_felt_exts(2 * self.num_fs)?
-        };
+        let (mut m_t_claims, mut f_claims) = self.read_final_claims(gamma, transcript)?;
         let mut r_m_t = Vec::new();
         let mut r_f = Vec::new();
         for layer in 0..self.log2_t_size.max(self.log2_f_size) {
@@ -338,6 +329,43 @@ impl LogUpNode {
         })
     }
 
+    fn read_final_claims<F: Field, E: ExtensionField<F>>(
+        &self,
+        gamma: E,
+        transcript: &mut (impl TranscriptRead<F, E> + ?Sized),
+    ) -> Result<(Vec<E>, Vec<E>), Error> {
+        let m_t_claims = if self.log2_t_size == 0 {
+            transcript.read_felts_as_exts(2)?
+        } else {
+            transcript.read_felt_exts(2)?
+        };
+        let f_claims = if self.log2_f_size == 0 {
+            transcript.read_felts_as_exts(self.num_fs)?
+        } else {
+            transcript.read_felt_exts(2 * self.num_fs)?
+        };
+
+        let lhs = if self.log2_t_size == 0 {
+            m_t_claims[0] * (m_t_claims[1] + gamma).invert().unwrap()
+        } else {
+            m_t_claims[0] * m_t_claims[1].invert().unwrap()
+        };
+        let rhs = if self.log2_f_size == 0 {
+            f_claims.iter().map(|f| (gamma + f).invert().unwrap()).sum()
+        } else {
+            f_claims
+                .iter()
+                .tuples()
+                .map(|(n, d)| *n * d.invert().unwrap())
+                .sum()
+        };
+        (lhs == rhs)
+            .then_some((m_t_claims, f_claims))
+            .ok_or(Error::InvalidSumCheck(
+                "Unmatched LogUp final claims".to_string(),
+            ))
+    }
+
     fn sum_check_relation<F, E, const IS_PROVING: bool>(
         &self,
         gamma: E,
@@ -358,10 +386,10 @@ impl LogUpNode {
         let mut r = [].as_slice();
         if m_t_state.is_proving() {
             let m_t_pair = if matches!(m_t_state, Interm) {
-                array::from_fn(Expression::poly)
+                from_fn(Expression::poly)
             } else {
                 let gamma = &Expression::constant(gamma);
-                let [m_l, m_r, t_l, t_r] = array::from_fn(Expression::poly);
+                let [m_l, m_r, t_l, t_r] = from_fn(Expression::poly);
                 [m_l, m_r, t_l + gamma, t_r + gamma]
             };
             pairs.push(m_t_pair);
@@ -374,7 +402,7 @@ impl LogUpNode {
                 (offset..)
                     .step_by(4)
                     .take(self.num_fs)
-                    .map(|offset| array::from_fn(|idx| Expression::poly(offset + idx)))
+                    .map(|offset| from_fn(|idx| Expression::poly(offset + idx)))
                     .collect_vec()
             } else {
                 let one = &Expression::constant(E::ONE);
@@ -383,7 +411,7 @@ impl LogUpNode {
                     .step_by(2)
                     .take(self.num_fs)
                     .map(|offset| {
-                        let [f_l, f_r] = array::from_fn(|idx| Expression::poly(offset + idx));
+                        let [f_l, f_r] = from_fn(|idx| Expression::poly(offset + idx));
                         [one.clone(), one.clone(), f_l + gamma, f_r + gamma]
                     })
                     .collect_vec()
@@ -407,6 +435,7 @@ impl LogUpNode {
     }
 }
 
+#[derive(Debug)]
 enum LogUpState {
     Interm,
     Initial,

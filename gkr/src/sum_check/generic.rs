@@ -1,6 +1,5 @@
 use crate::{
-    poly::MultilinearPoly,
-    sum_check::{eq_f::EqF, SumCheckFunction, SumCheckPoly},
+    sum_check::{eq_f::EqF, BoxSumCheckPoly, SumCheckFunction, SumCheckPoly},
     transcript::{TranscriptRead, TranscriptWrite},
     util::{
         arithmetic::{inner_product, steps, vander_mat_inv, ExtensionField, Field},
@@ -38,11 +37,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Generic<F, E> {
     }
 
     #[cfg(any(test, feature = "sanity-check"))]
-    fn compute_sum(
-        &self,
-        round: usize,
-        polys: &[SumCheckPoly<F, E, impl MultilinearPoly<F, E>, impl MultilinearPoly<E, E>>],
-    ) -> E {
+    fn compute_sum(&self, round: usize, polys: &[BoxSumCheckPoly<F, E>]) -> E {
         use crate::op_sum_check_poly;
 
         let evaluate = |b| {
@@ -71,7 +66,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Generic<F, E> {
         &self,
         round: usize,
         claim: E,
-        polys: &[SumCheckPoly<F, E, impl MultilinearPoly<F, E>, impl MultilinearPoly<E, E>>],
+        polys: &[BoxSumCheckPoly<F, E>],
     ) -> Vec<E> {
         let registry = &self.registry;
         assert_eq!(polys.len(), registry.datas().len());
@@ -146,7 +141,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Generic<F, E> {
         &self,
         _: usize,
         sum: &[E],
-        transcript: &mut (impl TranscriptWrite<F, E> + ?Sized),
+        transcript: &mut dyn TranscriptWrite<F, E>,
     ) -> Result<(), Error> {
         transcript.write_felt_ext(&sum[0])?;
         transcript.write_felt_exts(&sum[2..])?;
@@ -157,7 +152,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for Generic<F, E> {
         &self,
         round: usize,
         claim: E,
-        transcript: &mut (impl TranscriptRead<F, E> + ?Sized),
+        transcript: &mut dyn TranscriptRead<F, E>,
     ) -> Result<Vec<E>, Error> {
         let mut sum = vec![E::ZERO; self.degree + 1];
         sum[0] = transcript.read_felt_ext()?;

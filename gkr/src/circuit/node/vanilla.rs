@@ -597,7 +597,7 @@ pub mod test {
             node::{
                 input::InputNode,
                 vanilla::{VanillaGate, VanillaNode},
-                Node,
+                NodeExt,
             },
             test::{run_circuit, TestData},
             Circuit,
@@ -694,7 +694,7 @@ pub mod test {
             (0..log2_input_size)
                 .rev()
                 .map(|idx| VanillaNode::new(1, 1, gates.clone(), 1 << idx))
-                .map(Node::boxed)
+                .map(NodeExt::boxed)
         ]
         .collect_vec();
         let circuit = Circuit::linear(nodes);
@@ -721,7 +721,7 @@ pub mod test {
             (0..log2_input_size)
                 .rev()
                 .map(|idx| VanillaNode::new(1, 1, gates.clone(), 1 << idx))
-                .map(Node::boxed)
+                .map(NodeExt::boxed)
         ]
         .collect_vec();
         let circuit = Circuit::linear(nodes);

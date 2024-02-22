@@ -175,7 +175,7 @@ impl<F: PrimeField, E: ExtensionField<F>> FftNode<F, E> {
         w_interms: &[Vec<Vec<E>>],
         r_x: &[E],
         w_r_xs: &[E],
-        transcript: &mut (impl TranscriptWrite<F, E> + ?Sized),
+        transcript: &mut dyn TranscriptWrite<F, E>,
     ) -> Result<(), Error> {
         let r_gs = &claim.points;
 
@@ -214,7 +214,7 @@ impl<F: PrimeField, E: ExtensionField<F>> FftNode<F, E> {
         claim: &CombinedEvalClaim<E>,
         r_x: &[E],
         w_r_xs: &[E],
-        transcript: &mut (impl TranscriptRead<F, E> + ?Sized),
+        transcript: &mut dyn TranscriptRead<F, E>,
     ) -> Result<(), Error> {
         let r_gs = &claim.points;
         let alphas = &claim.alphas;
@@ -320,7 +320,7 @@ mod test {
             node::{
                 fft::{root_of_unity, FftNode},
                 input::InputNode,
-                Node,
+                NodeExt,
             },
             test::{run_circuit, TestData},
             Circuit,

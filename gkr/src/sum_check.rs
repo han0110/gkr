@@ -1,5 +1,5 @@
 use crate::{
-    poly::{BoxMultilinearPolyOwned, DenseMultilinearPoly, MultilinearPoly},
+    poly::{BoxMultilinearPoly, BoxMultilinearPolyOwned, MultilinearPoly, MultilinearPolyExt},
     transcript::{TranscriptRead, TranscriptWrite},
     util::{
         arithmetic::{horner, ExtensionField, Field},
@@ -8,7 +8,7 @@ use crate::{
     Error,
 };
 use rayon::prelude::*;
-use std::{convert::Infallible, fmt::Debug, marker::PhantomData};
+use std::{convert::Infallible, fmt::Debug, marker::PhantomData, mem};
 
 pub mod eq_f;
 pub mod generic;
@@ -18,7 +18,7 @@ pub fn prove_sum_check<F, E, P, PE>(
     g: &impl SumCheckFunction<F, E>,
     claim: E,
     polys: impl IntoIterator<Item = SumCheckPoly<F, E, P, PE>>,
-    transcript: &mut (impl TranscriptWrite<F, E> + ?Sized),
+    transcript: &mut dyn TranscriptWrite<F, E>,
 ) -> Result<(E, Vec<E>, Vec<E>), Error>
 where
     F: Field,
@@ -58,7 +58,7 @@ where
 pub fn verify_sum_check<F: Field, E: ExtensionField<F>>(
     g: &impl SumCheckFunction<F, E>,
     claim: E,
-    transcript: &mut (impl TranscriptRead<F, E> + ?Sized),
+    transcript: &mut dyn TranscriptRead<F, E>,
 ) -> Result<(E, Vec<E>), Error> {
     let num_vars = g.num_vars();
     assert!(num_vars > 0);
@@ -85,6 +85,7 @@ pub fn err_unmatched_evaluation() -> Error {
     Error::InvalidSumCheck("Unmatched evaluation from SumCheck subclaim".to_string())
 }
 
+#[auto_impl::auto_impl(&, Box)]
 pub trait SumCheckFunction<F, E>: Debug + Send + Sync {
     fn num_vars(&self) -> usize;
 
@@ -93,33 +94,46 @@ pub trait SumCheckFunction<F, E>: Debug + Send + Sync {
     fn evaluate(&self, evals: &[E]) -> E;
 
     #[cfg(any(test, feature = "sanity-check"))]
-    fn compute_sum(
-        &self,
-        round: usize,
-        polys: &[SumCheckPoly<F, E, impl MultilinearPoly<F, E>, impl MultilinearPoly<E, E>>],
-    ) -> E;
+    fn compute_sum(&self, round: usize, polys: &[BoxSumCheckPoly<F, E>]) -> E;
 
-    fn compute_round_poly(
-        &self,
-        round: usize,
-        claim: E,
-        polys: &[SumCheckPoly<F, E, impl MultilinearPoly<F, E>, impl MultilinearPoly<E, E>>],
-    ) -> Vec<E>;
+    fn compute_round_poly(&self, round: usize, claim: E, polys: &[BoxSumCheckPoly<F, E>])
+        -> Vec<E>;
 
     fn write_round_poly(
         &self,
         round: usize,
         sum: &[E],
-        transcript: &mut (impl TranscriptWrite<F, E> + ?Sized),
+        transcript: &mut dyn TranscriptWrite<F, E>,
     ) -> Result<(), Error>;
 
     fn read_round_poly(
         &self,
         round: usize,
         claim: E,
-        transcript: &mut (impl TranscriptRead<F, E> + ?Sized),
+        transcript: &mut dyn TranscriptRead<F, E>,
     ) -> Result<Vec<E>, Error>;
 }
+
+pub trait SumCheckFunctionExt<F, E>: SumCheckFunction<F, E> {
+    fn boxed<'a>(self) -> Box<dyn SumCheckFunction<F, E> + 'a>
+    where
+        Self: 'a + Sized,
+    {
+        Box::new(self)
+    }
+}
+
+impl<F, E, N: SumCheckFunction<F, E>> SumCheckFunctionExt<F, E> for N {
+    fn boxed<'a>(self) -> Box<dyn SumCheckFunction<F, E> + 'a>
+    where
+        Self: 'a + Sized,
+    {
+        Box::new(self)
+    }
+}
+
+type BoxSumCheckPoly<'a, F, E> =
+    SumCheckPoly<F, E, BoxMultilinearPoly<'a, F, E>, BoxMultilinearPoly<'a, E>>;
 
 #[derive(Clone, Debug)]
 pub enum SumCheckPoly<F, E, P, PE> {
@@ -154,6 +168,17 @@ where
         }
     }
 
+    pub fn boxed<'a>(self) -> BoxSumCheckPoly<'a, F, E>
+    where
+        Self: 'a,
+    {
+        match self {
+            Self::Base(poly) => SumCheckPoly::Base(poly.boxed()),
+            Self::Extension(poly) => SumCheckPoly::Extension(poly.boxed()),
+            _ => unreachable!(),
+        }
+    }
+
     pub fn op<T>(
         a: &Self,
         b: &Self,
@@ -170,19 +195,13 @@ where
     }
 }
 
-impl<F, E, PE> SumCheckPoly<F, E, DenseMultilinearPoly<F, Vec<F>>, PE>
-where
-    PE: MultilinearPoly<E, E>,
-{
+impl<'a, F, E, PE: MultilinearPoly<E, E>> SumCheckPoly<F, E, BoxMultilinearPoly<'a, F, E>, PE> {
     pub fn exts(polys: impl IntoIterator<Item = PE>) -> Vec<Self> {
         polys.into_iter().map(Self::Extension).collect()
     }
 }
 
-impl<F, E, P> SumCheckPoly<F, E, P, DenseMultilinearPoly<E, Vec<E>>>
-where
-    P: MultilinearPoly<F, E>,
-{
+impl<'a, F, E, P: MultilinearPoly<F, E>> SumCheckPoly<F, E, P, BoxMultilinearPoly<'a, E>> {
     pub fn bases(polys: impl IntoIterator<Item = P>) -> Vec<Self> {
         polys.into_iter().map(Self::Base).collect()
     }
@@ -191,7 +210,7 @@ where
 #[macro_export]
 macro_rules! op_sum_check_polys {
     (|$a:ident, $b:ident| $op:expr, |$bb_out:ident| $op_bb_out:expr) => {
-        SumCheckPoly::op(
+        $crate::sum_check::SumCheckPoly::op(
             $a,
             $b,
             &|a, b| {
@@ -221,12 +240,12 @@ macro_rules! op_sum_check_polys {
 macro_rules! op_sum_check_poly {
     ($a:ident, |$tmp_a:ident| $op:expr, |$b_out:ident| $op_b_out:expr) => {
         match $a {
-            SumCheckPoly::Base(a) => {
+            $crate::sum_check::SumCheckPoly::Base(a) => {
                 let $tmp_a = a;
                 let $b_out = $op;
                 $op_b_out
             }
-            SumCheckPoly::Extension(a) => {
+            $crate::sum_check::SumCheckPoly::Extension(a) => {
                 let $tmp_a = a;
                 $op
             }
@@ -247,23 +266,28 @@ macro_rules! op_sum_check_poly {
 pub use {op_sum_check_poly, op_sum_check_polys};
 
 #[derive(Debug)]
-struct Polys<F, E, P, PE> {
-    borrowed: Vec<SumCheckPoly<F, E, P, PE>>,
+struct Polys<'a, F, E> {
+    borrowed: Vec<BoxSumCheckPoly<'a, F, E>>,
     owned: Vec<BoxMultilinearPolyOwned<'static, E>>,
     _marker: PhantomData<F>,
 }
 
-impl<F, E, P, PE> Polys<F, E, P, PE>
+impl<'a, F, E> Polys<'a, F, E>
 where
     F: Field,
     E: ExtensionField<F>,
-    P: MultilinearPoly<F, E>,
-    PE: MultilinearPoly<E, E>,
 {
-    fn new(num_vars: usize, polys: impl IntoIterator<Item = SumCheckPoly<F, E, P, PE>>) -> Self {
+    fn new<P, PE>(
+        num_vars: usize,
+        polys: impl IntoIterator<Item = SumCheckPoly<F, E, P, PE>>,
+    ) -> Self
+    where
+        P: 'a + MultilinearPoly<F, E>,
+        PE: 'a + MultilinearPoly<E, E>,
+    {
         assert!(num_vars > 0);
 
-        let polys = polys.into_iter().collect_vec();
+        let polys = polys.into_iter().map(SumCheckPoly::boxed).collect_vec();
         assert!(!polys.is_empty());
         assert!(!polys.iter().any(|poly| poly.num_vars() != num_vars));
 
@@ -274,15 +298,18 @@ where
         }
     }
 
-    fn owned(&self) -> Vec<SumCheckPoly<F, E, P, &BoxMultilinearPolyOwned<'static, E>>> {
-        self.owned.iter().map(SumCheckPoly::Extension).collect()
+    fn owned(&self) -> Vec<BoxSumCheckPoly<F, E>> {
+        self.owned
+            .iter()
+            .map(MultilinearPolyExt::boxed)
+            .map(SumCheckPoly::Extension)
+            .collect()
     }
 
     fn fix_var(&mut self, r_i: &E) {
         if self.owned.is_empty() {
-            self.owned = self
-                .borrowed
-                .par_iter()
+            self.owned = mem::take(&mut self.borrowed)
+                .into_par_iter()
                 .map(|poly| poly.fix_var(r_i))
                 .collect();
         } else {
@@ -301,8 +328,7 @@ where
 pub(super) mod test {
     use crate::{
         izip_eq,
-        poly::BoxMultilinearPoly,
-        sum_check::{prove_sum_check, verify_sum_check, SumCheckFunction, SumCheckPoly},
+        sum_check::{prove_sum_check, verify_sum_check, BoxSumCheckPoly, SumCheckFunction},
         transcript::StdRngTranscript,
         util::{
             arithmetic::{ExtensionField, PrimeField},
@@ -312,10 +338,7 @@ pub(super) mod test {
     };
     use rand::rngs::StdRng;
 
-    pub(super) type TestData<F, E, G> = (
-        G,
-        Vec<SumCheckPoly<F, E, BoxMultilinearPoly<'static, F, E>, BoxMultilinearPoly<'static, E>>>,
-    );
+    pub(super) type TestData<F, E, G> = (G, Vec<BoxSumCheckPoly<'static, F, E>>);
 
     pub(super) fn run_sum_check<F: PrimeField, E: ExtensionField<F>, G: SumCheckFunction<F, E>>(
         f: impl Fn(usize, &mut StdRng) -> TestData<F, E, G>,
@@ -323,13 +346,12 @@ pub(super) mod test {
         let mut rng = seeded_std_rng();
         for num_vars in 1..10 {
             let (g, polys) = f(num_vars, &mut rng);
-            let polys = polys.iter().map(SumCheckPoly::as_ref).collect_vec();
             let claim = g.compute_sum(0, &polys);
 
             let (proof, evals) = {
+                let polys = polys.iter().map(|poly| poly.as_ref().boxed());
                 let mut transcript = StdRngTranscript::default();
-                let (_, _, evals) =
-                    prove_sum_check(&g, claim, polys.clone(), &mut transcript).unwrap();
+                let (_, _, evals) = prove_sum_check(&g, claim, polys, &mut transcript).unwrap();
                 (transcript.into_proof(), evals)
             };
 

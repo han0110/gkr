@@ -16,14 +16,8 @@ pub use input::InputNode;
 pub use log_up::LogUpNode;
 pub use vanilla::{VanillaGate, VanillaNode};
 
+#[auto_impl::auto_impl(&, Box)]
 pub trait Node<F, E>: Debug {
-    fn boxed<'a>(self) -> Box<dyn Node<F, E> + 'a>
-    where
-        Self: 'a + Sized,
-    {
-        Box::new(self)
-    }
-
     fn input_size(&self) -> usize {
         1 << self.log2_input_size()
     }
@@ -55,52 +49,25 @@ pub trait Node<F, E>: Debug {
     ) -> Result<Vec<Vec<EvalClaim<E>>>, Error>;
 }
 
-impl<F, E> Node<F, E> for Box<dyn Node<F, E>> {
+pub trait NodeExt<F, E>: Node<F, E> {
     fn boxed<'a>(self) -> Box<dyn Node<F, E> + 'a>
     where
         Self: 'a + Sized,
     {
-        self
-    }
-
-    fn is_input(&self) -> bool {
-        (**self).is_input()
-    }
-
-    fn log2_input_size(&self) -> usize {
-        (**self).log2_input_size()
-    }
-
-    fn log2_output_size(&self) -> usize {
-        (**self).log2_output_size()
-    }
-
-    fn evaluate(
-        &self,
-        inputs: Vec<&BoxMultilinearPoly<F, E>>,
-    ) -> BoxMultilinearPoly<'static, F, E> {
-        (**self).evaluate(inputs)
-    }
-
-    fn prove_claim_reduction(
-        &self,
-        claim: CombinedEvalClaim<E>,
-        inputs: Vec<&BoxMultilinearPoly<F, E>>,
-        transcript: &mut dyn TranscriptWrite<F, E>,
-    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
-        (**self).prove_claim_reduction(claim, inputs, transcript)
-    }
-
-    fn verify_claim_reduction(
-        &self,
-        claim: CombinedEvalClaim<E>,
-        transcript: &mut dyn TranscriptRead<F, E>,
-    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
-        (**self).verify_claim_reduction(claim, transcript)
+        Box::new(self)
     }
 }
 
-#[derive(Clone, Debug)]
+impl<F, E, N: Node<F, E>> NodeExt<F, E> for N {
+    fn boxed<'a>(self) -> Box<dyn Node<F, E> + 'a>
+    where
+        Self: 'a + Sized,
+    {
+        Box::new(self)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct EvalClaim<F> {
     point: Vec<F>,
     value: F,

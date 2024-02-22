@@ -3,7 +3,7 @@ use criterion::{
     BenchmarkId, Criterion,
 };
 use gkr::{
-    poly::{eq_poly, DenseMultilinearPoly, MultilinearPoly},
+    poly::{box_dense_poly, eq_poly, DenseMultilinearPoly, MultilinearPoly},
     sum_check::{quadratic::Quadratic, SumCheckFunction, SumCheckPoly},
     util::{
         arithmetic::Field,
@@ -71,7 +71,7 @@ fn bench_compute_sum_qudratic(c: &mut Criterion) {
         let [f, h] = array::from_fn(|_| rand_vec::<F>(1 << RANGE.end, &mut rng));
 
         for num_vars in RANGE {
-            let [f, h] = [&f, &h].map(|poly| DenseMultilinearPoly::new(&poly[..1 << num_vars]));
+            let [f, h] = [&f, &h].map(|poly| box_dense_poly(&poly[..1 << num_vars]));
             let polys = SumCheckPoly::bases([f, h]);
             let g = Quadratic::new(num_vars, vec![(None, 0, 1)]);
             let id = BenchmarkId::new(field_name::<F>(), num_vars);

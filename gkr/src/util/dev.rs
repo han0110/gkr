@@ -1,9 +1,17 @@
-use crate::util::{arithmetic::Field, Itertools};
+use crate::{
+    izip_par,
+    poly::MultilinearPoly,
+    util::{
+        arithmetic::{ExtensionField, Field},
+        Itertools,
+    },
+};
 use rand::{
     distributions::uniform::SampleRange,
     rngs::{OsRng, StdRng},
     Rng, RngCore, SeedableRng,
 };
+use rayon::prelude::*;
 use std::{any::type_name, array, hash::Hash, iter};
 
 pub fn field_name<F: Field>() -> &'static str {
@@ -51,4 +59,14 @@ where
     R: RngCore,
 {
     iter::repeat_with(|| f(&mut rng)).unique().take(n).collect()
+}
+
+pub fn assert_polys_eq<F: Field, E: ExtensionField<F>>(
+    lhs: impl IntoIterator<Item = impl MultilinearPoly<F, E>>,
+    rhs: impl IntoIterator<Item = impl MultilinearPoly<F, E>>,
+) {
+    let lhs = lhs.into_iter().collect_vec();
+    let rhs = rhs.into_iter().collect_vec();
+    assert_eq!(lhs.len(), rhs.len());
+    izip_par!(lhs, rhs).for_each(|(lhs, rhs)| assert_eq!(lhs.to_dense(), rhs.to_dense()));
 }
