@@ -108,26 +108,3 @@ impl_index!(<'a, F, E>, BoxMultilinearPoly<'a, F, E>);
 impl_index!(<'a, F, E>, &BoxMultilinearPoly<'a, F, E>);
 impl_index!(<'a, F>, BoxMultilinearPolyOwned<'a, F>);
 impl_index!(<'a, F>, &BoxMultilinearPolyOwned<'a, F>);
-
-#[cfg(test)]
-pub(crate) mod test {
-    use crate::{
-        izip_par,
-        poly::MultilinearPoly,
-        util::{
-            arithmetic::{ExtensionField, Field},
-            Itertools,
-        },
-    };
-    use rayon::prelude::*;
-
-    pub(crate) fn assert_polys_eq<F: Field, E: ExtensionField<F>>(
-        lhs: impl IntoIterator<Item = impl MultilinearPoly<F, E>>,
-        rhs: impl IntoIterator<Item = impl MultilinearPoly<F, E>>,
-    ) {
-        let lhs = lhs.into_iter().collect_vec();
-        let rhs = rhs.into_iter().collect_vec();
-        assert_eq!(lhs.len(), rhs.len());
-        izip_par!(lhs, rhs).for_each(|(lhs, rhs)| assert_eq!(lhs.to_dense(), rhs.to_dense()));
-    }
-}

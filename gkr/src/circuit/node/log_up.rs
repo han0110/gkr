@@ -243,16 +243,7 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for LogUpNode {
     ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
         let gamma = transcript.squeeze_challenge();
 
-        let mut m_t_claims = if self.log2_t_size == 0 {
-            transcript.read_felts_as_exts(2)?
-        } else {
-            transcript.read_felt_exts(2)?
-        };
-        let mut f_claims = if self.log2_f_size == 0 {
-            transcript.read_felts_as_exts(self.num_fs)?
-        } else {
-            transcript.read_felt_exts(2 * self.num_fs)?
-        };
+        let (mut m_t_claims, mut f_claims) = self.read_final_claims(gamma, transcript)?;
         let mut r_m_t = Vec::new();
         let mut r_f = Vec::new();
         for layer in 0..self.log2_t_size.max(self.log2_f_size) {
@@ -336,6 +327,43 @@ impl LogUpNode {
             Equal => Initial,
             Greater => Finished,
         })
+    }
+
+    fn read_final_claims<F: Field, E: ExtensionField<F>>(
+        &self,
+        gamma: E,
+        transcript: &mut (impl TranscriptRead<F, E> + ?Sized),
+    ) -> Result<(Vec<E>, Vec<E>), Error> {
+        let m_t_claims = if self.log2_t_size == 0 {
+            transcript.read_felts_as_exts(2)?
+        } else {
+            transcript.read_felt_exts(2)?
+        };
+        let f_claims = if self.log2_f_size == 0 {
+            transcript.read_felts_as_exts(self.num_fs)?
+        } else {
+            transcript.read_felt_exts(2 * self.num_fs)?
+        };
+
+        let lhs = if self.log2_t_size == 0 {
+            m_t_claims[0] * (m_t_claims[1] + gamma).invert().unwrap()
+        } else {
+            m_t_claims[0] * m_t_claims[1].invert().unwrap()
+        };
+        let rhs = if self.log2_f_size == 0 {
+            f_claims.iter().map(|f| (gamma + f).invert().unwrap()).sum()
+        } else {
+            f_claims
+                .iter()
+                .tuples()
+                .map(|(n, d)| *n * d.invert().unwrap())
+                .sum()
+        };
+        (lhs == rhs)
+            .then_some((m_t_claims, f_claims))
+            .ok_or(Error::InvalidSumCheck(
+                "Unmatched LogUp final claims".to_string(),
+            ))
     }
 
     fn sum_check_relation<F, E, const IS_PROVING: bool>(

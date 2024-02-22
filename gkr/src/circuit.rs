@@ -87,10 +87,10 @@ pub(super) mod test {
     use crate::{
         circuit::Circuit,
         dev::run_gkr_with_values,
-        poly::{test::assert_polys_eq, BoxMultilinearPoly},
+        poly::BoxMultilinearPoly,
         util::{
             arithmetic::{ExtensionField, PrimeField},
-            dev::seeded_std_rng,
+            dev::{assert_polys_eq, seeded_std_rng},
         },
     };
     use rand::rngs::StdRng;

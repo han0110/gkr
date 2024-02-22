@@ -4,12 +4,11 @@ use criterion::{
 };
 use gkr::{
     circuit::node::EvalClaim,
-    ff_ext::ExtensionField,
     poly::MultilinearPoly,
     prove_gkr,
     transcript::StdRngTranscript,
     util::{
-        arithmetic::PrimeField,
+        arithmetic::{ExtensionField, PrimeField},
         dev::{rand_bytes, rand_vec, seeded_std_rng},
     },
 };
@@ -25,21 +24,22 @@ fn run_keccak256<F: PrimeField, E: ExtensionField<F>>(
         let mut rng = seeded_std_rng();
         let keccak = Keccak::new(256, num_reps);
         let input = rand_bytes(num_reps * keccak.rate() - 1, &mut rng);
-        let (circuit, values) = keccak_circuit(keccak, &input);
+        let (_, values) = keccak_circuit(keccak, &input);
         let output_claims = {
-            let output = values.last().unwrap();
-            let point = rand_vec(output.len().ilog2() as usize, &mut rng);
+            let output = &values[74];
+            let point = rand_vec(output.num_vars(), &mut rng);
             let value = output.evaluate(&point);
-            vec![EvalClaim::new(point, value)]
+            vec![EvalClaim::new(point, value), EvalClaim::default()]
         };
-        (circuit, values, output_claims)
+        (input, output_claims)
     };
 
     for num_reps in (5..10).map(|log2| 1 << log2) {
         let id = BenchmarkId::new(field_name, num_reps);
-        let (circuit, values, output_claims) = setup(num_reps);
+        let (input, output_claims) = setup(num_reps);
         group.bench_with_input(id, &num_reps, |b, _| {
             b.iter(|| {
+                let (circuit, values) = keccak_circuit(Keccak::new(256, num_reps), &input);
                 let mut transcript = StdRngTranscript::default();
                 prove_gkr::<F, E>(&circuit, &values, &output_claims, &mut transcript).unwrap();
             });

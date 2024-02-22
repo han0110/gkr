@@ -67,7 +67,7 @@ impl<F, E, N: Node<F, E>> NodeExt<F, E> for N {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct EvalClaim<F> {
     point: Vec<F>,
     value: F,
