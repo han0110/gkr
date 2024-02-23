@@ -3,7 +3,7 @@ use rayon::prelude::*;
 use std::{
     array,
     iter::Sum,
-    ops::{Add, AddAssign, Deref, DerefMut},
+    ops::{Add, AddAssign, Deref, DerefMut, Mul, MulAssign},
 };
 
 pub trait Hadamard<T> {
@@ -63,6 +63,21 @@ impl<F: AddAssign, const N: usize> Add for AdditiveArray<F, N> {
     }
 }
 
+impl<F: MulAssign + Copy, const N: usize> MulAssign<F> for AdditiveArray<F, N> {
+    fn mul_assign(&mut self, rhs: F) {
+        self.0.iter_mut().for_each(|lhs| *lhs *= rhs);
+    }
+}
+
+impl<F: MulAssign + Copy, const N: usize> Mul<F> for AdditiveArray<F, N> {
+    type Output = Self;
+
+    fn mul(mut self, rhs: F) -> Self::Output {
+        self *= rhs;
+        self
+    }
+}
+
 impl<F: AddAssign + Default, const N: usize> Sum for AdditiveArray<F, N> {
     fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
         iter.reduce(|acc, item| acc + item).unwrap_or_default()
@@ -103,6 +118,21 @@ impl<F: AddAssign> Add for AdditiveVec<F> {
 
     fn add(mut self, rhs: Self) -> Self::Output {
         self += rhs;
+        self
+    }
+}
+
+impl<F: MulAssign + Copy> MulAssign<F> for AdditiveVec<F> {
+    fn mul_assign(&mut self, rhs: F) {
+        self.0.iter_mut().for_each(|lhs| *lhs *= rhs);
+    }
+}
+
+impl<F: MulAssign + Copy> Mul<F> for AdditiveVec<F> {
+    type Output = Self;
+
+    fn mul(mut self, rhs: F) -> Self::Output {
+        self *= rhs;
         self
     }
 }

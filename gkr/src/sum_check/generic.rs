@@ -13,7 +13,7 @@ use crate::{
 use rayon::prelude::*;
 use std::fmt::Debug;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Generic<F: Field, E: ExtensionField<F>> {
     num_vars: usize,
     expression: Expression<E, usize>,

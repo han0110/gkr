@@ -83,7 +83,7 @@ impl<F: PrimeField, E: ExtensionField<F>> Node<F, E> for FftNode<F, E> {
             .unzip::<_, _, Vec<_>, Vec<_>>();
 
         let (r_x, input_r_x, w_r_xs) = {
-            let g = Quadratic::new(self.log2_size, vec![(None, 0, 1)]);
+            let g = Quadratic::new(self.log2_size, vec![(E::ONE, 0, 1)]);
             let w = box_dense_poly(ws.par_iter().cloned().hada_sum());
             let polys = [SumCheckPoly::Base(inputs[0]), SumCheckPoly::Extension(&w)];
             let (_, r_x, evals) = prove_sum_check(&g, claim.value, polys, transcript)?;
@@ -104,7 +104,7 @@ impl<F: PrimeField, E: ExtensionField<F>> Node<F, E> for FftNode<F, E> {
         transcript: &mut dyn TranscriptRead<F, E>,
     ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
         let (r_x, input_r_x, w_r_xs) = {
-            let g = Quadratic::new(self.log2_size, vec![(None, 0, 1)]);
+            let g = Quadratic::new(self.log2_size, vec![(E::ONE, 0, 1)]);
             let (sub_claim, r_x) = verify_sum_check(&g, claim.value, transcript)?;
             let input_r_x = transcript.read_felt_ext()?;
             let w_r_xs = transcript.read_felt_exts(claim.points.len())?;
