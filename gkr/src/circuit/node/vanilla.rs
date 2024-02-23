@@ -233,7 +233,7 @@ impl<F: Field, E: ExtensionField<F>> VanillaNode<F, E> {
 
     fn sum_check_function(&self, phase: usize) -> Quadratic<E> {
         let n = self.inputs[phase].len();
-        let pairs = (0..n).map(|idx| (None, idx, n + idx)).collect();
+        let pairs = (0..n).map(|idx| (E::ONE, idx, n + idx)).collect();
         Quadratic::new(self.log2_input_size(), pairs)
     }
 

@@ -3,8 +3,8 @@ use crate::{
     izip_par,
     poly::{box_dense_poly, merge, BoxMultilinearPoly, MultilinearPoly},
     sum_check::{
-        err_unmatched_evaluation, generic::Generic, prove_sum_check, verify_sum_check,
-        SumCheckFunction, SumCheckPoly,
+        err_unmatched_evaluation, generic::Generic, prove_sum_check, quadratic::Quadratic,
+        verify_sum_check, SumCheckFunction, SumCheckFunctionExt, SumCheckPoly,
     },
     transcript::{Transcript, TranscriptRead, TranscriptWrite},
     util::{
@@ -373,7 +373,7 @@ impl LogUpNode {
         (m_t_claims, r_m_t): (&[E], &[E]),
         (f_claims, r_f): (&[E], &[E]),
         transcript: &mut (impl Transcript<F, E> + ?Sized),
-    ) -> (Generic<F, E>, E)
+    ) -> (Box<dyn SumCheckFunction<F, E>>, E)
     where
         F: Field,
         E: ExtensionField<F>,
@@ -423,11 +423,15 @@ impl LogUpNode {
 
         let alpha = transcript.squeeze_challenge();
         let g = {
-            let expressions = pairs
+            let exprs = pairs
                 .iter()
                 .flat_map(|[n_l, n_r, d_l, d_r]| [n_l * d_r + n_r * d_l, d_l * d_r]);
-            let expression = Expression::distribute_powers(expressions, alpha);
-            Generic::new(layer, &expression).mul_by_eq(r, IS_PROVING)
+            let expr = Expression::distribute_powers(exprs, alpha);
+            if IS_PROVING {
+                Quadratic::parse(layer, &expr).mul_by_eq(r, true).boxed()
+            } else {
+                Generic::new(layer, &expr).mul_by_eq(r, false).boxed()
+            }
         };
         let claim = inner_product::<E, E>(&claims, powers(alpha).take(claims.len()));
 

@@ -84,9 +84,9 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for EqF<E> {
 
         op_sum_check_poly!(|f| (0..f.len())
             .into_par_iter()
-            .map(|idx| {
-                let scalar = subset_i[idx >> 1] * if idx & 1 == 0 { E::ONE - r_i } else { r_i };
-                scalar * f[idx]
+            .map(|b| {
+                let scalar = subset_i[b >> 1] * if b & 1 == 0 { E::ONE - r_i } else { r_i };
+                scalar * f[b]
             })
             .sum::<E>())
     }
@@ -110,7 +110,7 @@ impl<F: Field, E: ExtensionField<F>> SumCheckFunction<F, E> for EqF<E> {
                 .into_par_iter()
                 .step_by(2)
                 .with_min_len(64)
-                .map(|idx| subset_i[idx >> 1] * f[idx])
+                .map(|b| subset_i[b >> 1] * f[b])
                 .sum()
         });
         let eval_1 = self.eval_1(round, claim, eval_0);
@@ -156,9 +156,7 @@ fn eq_subsets<F: Field>(r: &[F]) -> Vec<Vec<F>> {
                     (0..subset_i.len() << 1)
                         .into_par_iter()
                         .with_min_len(64)
-                        .map(|idx| {
-                            subset_i[idx >> 1] * if idx & 1 == 0 { one_minus_r_i } else { *r_i }
-                        })
+                        .map(|b| subset_i[b >> 1] * if b & 1 == 0 { one_minus_r_i } else { *r_i })
                         .collect(),
                 )
             }

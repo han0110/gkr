@@ -288,7 +288,6 @@ where
         assert!(num_vars > 0);
 
         let polys = polys.into_iter().map(SumCheckPoly::boxed).collect_vec();
-        assert!(!polys.is_empty());
         assert!(!polys.iter().any(|poly| poly.num_vars() != num_vars));
 
         Self {

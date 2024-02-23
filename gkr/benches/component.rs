@@ -73,7 +73,7 @@ fn bench_compute_sum_qudratic(c: &mut Criterion) {
         for num_vars in RANGE {
             let [f, h] = [&f, &h].map(|poly| box_dense_poly(&poly[..1 << num_vars]));
             let polys = SumCheckPoly::bases([f, h]);
-            let g = Quadratic::new(num_vars, vec![(None, 0, 1)]);
+            let g = Quadratic::new(num_vars, vec![(F::ONE, 0, 1)]);
             let id = BenchmarkId::new(field_name::<F>(), num_vars);
             group.bench_function(id, |b| {
                 b.iter(|| black_box(&g).compute_round_poly(0, F::ZERO, black_box(&polys)))
