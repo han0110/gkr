@@ -1,10 +1,11 @@
 use crate::{
     poly::{
-        BoxMultilinearPoly, BoxMultilinearPolyOwned, DenseMultilinearPoly, MultilinearPoly,
-        MultilinearPolyExt, MultilinearPolyOwned,
+        box_owned_dense_poly, BoxMultilinearPoly, BoxMultilinearPolyOwned, DenseMultilinearPoly,
+        MultilinearPoly, MultilinearPolyExt, MultilinearPolyOwned,
     },
     util::arithmetic::{ExtensionField, Field},
 };
+use rayon::prelude::*;
 use std::{fmt::Debug, marker::PhantomData, ops::Index};
 
 #[derive(Clone, Debug)]
@@ -71,30 +72,54 @@ where
         } else {
             assert!(self.log2_reps > 0);
 
-            let inner = DenseMultilinearPoly::new(vec![E::from(self.inner[0])]).box_owned();
+            let inner = box_owned_dense_poly(vec![E::from(self.inner[0])]);
             RepeatedMultilinearPoly::new(inner, self.log2_reps - 1).box_owned()
+        }
+    }
+
+    fn fix_var_last(&self, x_i: &E) -> BoxMultilinearPolyOwned<'static, E> {
+        if self.log2_reps == 0 {
+            self.inner.fix_var_last(x_i)
+        } else {
+            let evals = (0..self.inner.len())
+                .into_par_iter()
+                .with_min_len(64)
+                .map(|b| E::from(self.inner[b]))
+                .collect::<Vec<_>>();
+            DenseMultilinearPoly::new(evals)
+                .repeated(self.log2_reps - 1)
+                .box_owned()
         }
     }
 
     fn evaluate(&self, x: &[E]) -> E {
         self.inner.evaluate(&x[..self.inner.num_vars()])
     }
-
-    fn as_dense(&self) -> Option<&[F]> {
-        None
-    }
 }
 
-impl<F: Field> MultilinearPolyOwned<F>
-    for RepeatedMultilinearPoly<BoxMultilinearPolyOwned<'static, F>, F>
-{
-    fn fix_var_in_place(&mut self, x_i: &F) {
-        if self.inner.num_vars() > 0 {
-            self.inner.fix_var_in_place(x_i);
-        } else {
-            assert!(self.log2_reps > 0);
+macro_rules! impl_multi_poly_owned {
+    ($type:ty) => {
+        impl<F: Field> MultilinearPolyOwned<F> for RepeatedMultilinearPoly<$type, F> {
+            fn fix_var_in_place(&mut self, x_i: &F) {
+                if MultilinearPoly::<F, F>::num_vars(&self.inner) > 0 {
+                    self.inner.fix_var_in_place(x_i);
+                } else {
+                    assert!(self.log2_reps > 0);
 
-            self.log2_reps -= 1;
+                    self.log2_reps -= 1;
+                }
+            }
+
+            fn fix_var_last_in_place(&mut self, x_i: &F) {
+                if self.log2_reps == 0 {
+                    self.inner.fix_var_in_place(x_i);
+                } else {
+                    self.log2_reps -= 1;
+                }
+            }
         }
-    }
+    };
 }
+
+impl_multi_poly_owned!(BoxMultilinearPolyOwned<'static, F>);
+impl_multi_poly_owned!(DenseMultilinearPoly<F, Vec<F>>);

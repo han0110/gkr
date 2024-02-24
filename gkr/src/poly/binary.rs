@@ -1,5 +1,5 @@
 use crate::{
-    poly::{BoxMultilinearPoly, BoxMultilinearPolyOwned, DenseMultilinearPoly, MultilinearPoly},
+    poly::{box_owned_dense_poly, BoxMultilinearPoly, BoxMultilinearPolyOwned, MultilinearPoly},
     util::arithmetic::{ExtensionField, Field},
 };
 use rayon::prelude::*;
@@ -35,6 +35,11 @@ impl<F: Field> BinaryMultilinearPoly<F> {
             one: F::ONE,
         }
     }
+
+    #[inline(always)]
+    fn bits<const N: usize>(&self, b: usize) -> usize {
+        (self.evals[b >> Self::LOG2_BITS] as usize >> (b & Self::MASK)) & ((1 << N) - 1)
+    }
 }
 
 impl<F: Field> Index<usize> for BinaryMultilinearPoly<F> {
@@ -66,18 +71,25 @@ impl<F: Field, E: ExtensionField<F>> MultilinearPoly<F, E> for BinaryMultilinear
             .into_par_iter()
             .step_by(2)
             .with_min_len(32)
-            .map(|b| table[(self.evals[b >> Self::LOG2_BITS] as usize >> (b & Self::MASK)) & 0b11])
+            .map(|b| table[self.bits::<2>(b)])
             .collect();
-        DenseMultilinearPoly::new(evals).box_owned()
+        box_owned_dense_poly(evals)
+    }
+
+    fn fix_var_last(&self, x_i: &E) -> BoxMultilinearPolyOwned<'static, E> {
+        let table = [E::ZERO, E::ONE - x_i, *x_i, E::ONE];
+        let mid = 1 << (self.num_vars - 1);
+        let evals = (0..mid)
+            .into_par_iter()
+            .with_min_len(32)
+            .map(|b| table[self.bits::<1>(b) | self.bits::<1>(mid + b) << 1])
+            .collect();
+        box_owned_dense_poly(evals)
     }
 
     fn evaluate(&self, x: &[E]) -> E {
         assert_eq!(x.len(), self.num_vars);
 
         self.fix_var(&x[0]).evaluate(&x[1..])
-    }
-
-    fn as_dense(&self) -> Option<&[F]> {
-        None
     }
 }

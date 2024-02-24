@@ -1,7 +1,7 @@
 use crate::{
     poly::{
-        evaluate, merge, BoxMultilinearPoly, BoxMultilinearPolyOwned, MultilinearPoly,
-        MultilinearPolyExt, MultilinearPolyOwned,
+        evaluate, merge, merge_last, merge_last_in_place, BoxMultilinearPoly,
+        BoxMultilinearPolyOwned, MultilinearPoly, MultilinearPolyExt, MultilinearPolyOwned,
     },
     util::arithmetic::{ExtensionField, Field},
 };
@@ -54,7 +54,12 @@ impl<F: Field, E: ExtensionField<F>, S: Clone + Debug + AsRef<[F]> + Send + Sync
 
     fn fix_var(&self, x_i: &E) -> BoxMultilinearPolyOwned<'static, E> {
         let evals = merge(self.evals.as_ref(), x_i);
-        DenseMultilinearPoly::new(evals).box_owned()
+        box_owned_dense_poly(evals)
+    }
+
+    fn fix_var_last(&self, x_i: &E) -> BoxMultilinearPolyOwned<'static, E> {
+        let evals = merge_last(self.evals.as_ref(), x_i);
+        box_owned_dense_poly(evals)
     }
 
     fn evaluate(&self, x: &[E]) -> E {
@@ -71,6 +76,11 @@ impl<F: Field> MultilinearPolyOwned<F> for DenseMultilinearPoly<F, Vec<F>> {
         self.num_vars -= 1;
         self.evals = merge(&self.evals, x_i);
     }
+
+    fn fix_var_last_in_place(&mut self, x_i: &F) {
+        self.num_vars -= 1;
+        merge_last_in_place(&mut self.evals, x_i);
+    }
 }
 
 pub fn box_dense_poly<'a, F, E, S>(evals: S) -> BoxMultilinearPoly<'a, F, E>
@@ -80,6 +90,13 @@ where
     S: 'a + Clone + Debug + AsRef<[F]> + Send + Sync,
 {
     DenseMultilinearPoly::new(evals).boxed()
+}
+
+pub fn box_owned_dense_poly<'a, F>(evals: Vec<F>) -> BoxMultilinearPolyOwned<'a, F>
+where
+    F: Field,
+{
+    DenseMultilinearPoly::new(evals).box_owned()
 }
 
 pub fn repeated_dense_poly<'a, F, E, S>(evals: S, log2_reps: usize) -> BoxMultilinearPoly<'a, F, E>
