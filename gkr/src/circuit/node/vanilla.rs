@@ -1,8 +1,8 @@
 use crate::{
     circuit::node::{CombinedEvalClaim, EvalClaim, Node},
     poly::{
-        box_dense_poly, eq_eval, repeated_dense_poly, BoxMultilinearPoly, MultilinearPoly,
-        PartialEqPoly,
+        box_dense_poly, box_owned_dense_poly, eq_eval, repeated_dense_poly, BoxMultilinearPoly,
+        BoxMultilinearPolyOwned, MultilinearPoly, PartialEqPoly,
     },
     sum_check::{
         err_unmatched_evaluation, prove_sum_check, quadratic::Quadratic, verify_sum_check,
@@ -85,6 +85,10 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for VanillaNode<F, E> {
     ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
         assert_eq!(inputs.len(), self.input_arity);
 
+        if self.inputs.len() == 1 && claim.points.len() == 1 {
+            return self.prove_linear_claim_reduction(claim, inputs, transcript);
+        }
+
         let eq_r_gs = self.eq_r_gs(&claim.points, &claim.alphas);
         let eq_r_g_prime = self.eq_r_g_prime(&eq_r_gs);
 
@@ -94,7 +98,7 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for VanillaNode<F, E> {
         let mut input_r_xs = Vec::new();
         for (phase, indices) in izip!(0.., &self.inputs) {
             let (subclaim, r_x_i, evals) = {
-                let g = self.sum_check_function(phase);
+                let g = self.sum_check_function(phase, self.log2_input_size());
                 let claim = claim - self.sum_check_eval(&eq_r_gs, &eq_r_xs, &input_r_xs);
                 let polys = self.sum_check_polys(&inputs, &eq_r_g_prime, &eq_r_xs, &input_r_xs);
                 prove_sum_check(&g, claim, polys, transcript)?
@@ -119,6 +123,10 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for VanillaNode<F, E> {
         claim: CombinedEvalClaim<E>,
         transcript: &mut dyn TranscriptRead<F, E>,
     ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
+        if self.inputs.len() == 1 && claim.points.len() == 1 {
+            return self.verify_linear_claim_reduction(claim, transcript);
+        }
+
         let eq_r_gs = self.eq_r_gs(&claim.points, &claim.alphas);
 
         let mut claim = claim.value;
@@ -127,7 +135,7 @@ impl<F: Field, E: ExtensionField<F>> Node<F, E> for VanillaNode<F, E> {
         let mut input_r_xs = Vec::new();
         for (phase, indices) in izip!(0.., &self.inputs) {
             let (subclaim, r_x_i) = {
-                let g = self.sum_check_function(phase);
+                let g = self.sum_check_function(phase, self.log2_input_size());
                 let claim = claim - self.sum_check_eval(&eq_r_gs, &eq_r_xs, &input_r_xs);
                 verify_sum_check(&g, claim, transcript)?
             };
@@ -212,6 +220,66 @@ impl<F: Field, E: ExtensionField<F>> VanillaNode<F, E> {
         self.log2_reps
     }
 
+    fn prove_linear_claim_reduction(
+        &self,
+        claim: CombinedEvalClaim<E>,
+        inputs: Vec<&BoxMultilinearPoly<F, E>>,
+        transcript: &mut dyn TranscriptWrite<F, E>,
+    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
+        let indices = &self.inputs[0];
+
+        let eq_r_gs = self.eq_r_gs(&claim.points, &claim.alphas);
+        let (_, r_x_i, evals) = {
+            let g = self.sum_check_function(0, self.log2_sub_input_size());
+            let claim = claim.value - self.sum_check_eval(&eq_r_gs, &[], &[]);
+            let polys = {
+                let wirings = {
+                    let eq_r_g = box_dense_poly(eq_r_gs[0].as_slice());
+                    let data = SumCheckPoly::exts(vec![&eq_r_g; 1 + indices.len()]);
+                    self.inner_wiring(0, data, 1 << self.log2_sub_input_size())
+                };
+                let inputs = indices
+                    .par_iter()
+                    .map(|input| {
+                        if eq_r_gs[0].r_hi().is_empty() {
+                            SumCheckPoly::Base(inputs[*input])
+                        } else {
+                            SumCheckPoly::Extension(inputs[*input].fix_vars_last(eq_r_gs[0].r_hi()))
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                chain![wirings, inputs]
+            };
+            prove_sum_check(&g, claim, polys, transcript)?
+        };
+        let input_r_x_is = evals.into_iter().skip(indices.len()).collect_vec();
+        transcript.write_felt_exts(&input_r_x_is)?;
+
+        let r_xs = [chain![r_x_i, eq_r_gs[0].r_hi().iter().copied()].collect()];
+        let input_r_xs = [(izip!(indices.clone(), input_r_x_is)).collect()];
+        Ok(self.input_claims(&r_xs, &input_r_xs))
+    }
+
+    fn verify_linear_claim_reduction(
+        &self,
+        claim: CombinedEvalClaim<E>,
+        transcript: &mut dyn TranscriptRead<F, E>,
+    ) -> Result<Vec<Vec<EvalClaim<E>>>, Error> {
+        let indices = &self.inputs[0];
+
+        let eq_r_gs = self.eq_r_gs(&claim.points, &claim.alphas);
+        let (_, r_x_i) = {
+            let g = self.sum_check_function(0, self.log2_sub_input_size());
+            let claim = claim.value - self.sum_check_eval(&eq_r_gs, &[], &[]);
+            verify_sum_check(&g, claim, transcript)?
+        };
+        let input_r_x_is = transcript.read_felt_exts(indices.len())?;
+
+        let r_xs = [chain![r_x_i, eq_r_gs[0].r_hi().iter().copied()].collect()];
+        let input_r_xs = [(izip!(indices.clone(), input_r_x_is)).collect()];
+        Ok(self.input_claims(&r_xs, &input_r_xs))
+    }
+
     fn eq_r_gs(&self, r_gs: &[Vec<E>], alphas: &[E]) -> Vec<PartialEqPoly<E>> {
         izip_par!(r_gs, alphas)
             .map(|(r_g, alpha)| PartialEqPoly::new(r_g, self.log2_sub_output_size, *alpha))
@@ -231,10 +299,10 @@ impl<F: Field, E: ExtensionField<F>> VanillaNode<F, E> {
         PartialEqPoly::new(r_x, self.log2_sub_input_size, scalar)
     }
 
-    fn sum_check_function(&self, phase: usize) -> Quadratic<E> {
+    fn sum_check_function(&self, phase: usize, num_vars: usize) -> Quadratic<E> {
         let n = self.inputs[phase].len();
         let pairs = (0..n).map(|idx| (E::ONE, idx, n + idx)).collect();
-        Quadratic::new(self.log2_input_size(), pairs)
+        Quadratic::new(num_vars, pairs)
     }
 
     fn sum_check_polys<'a>(
@@ -266,7 +334,7 @@ impl<F: Field, E: ExtensionField<F>> VanillaNode<F, E> {
             [SumCheckPoly::Extension(eq_r_g_prime)]
         ]
         .collect();
-        self.inner_wiring(0, data)
+        self.inner_wiring(0, data, self.input_size())
     }
 
     fn phase_1_wiring<'a>(
@@ -281,13 +349,14 @@ impl<F: Field, E: ExtensionField<F>> VanillaNode<F, E> {
             .collect_vec();
         let eq_r_x_0 = box_dense_poly(eq_r_xs[0].expand());
         let data = SumCheckPoly::exts(chain![&inputs, [eq_r_g_prime, &eq_r_x_0]]);
-        self.inner_wiring(1, data)
+        self.inner_wiring(1, data, self.input_size())
     }
 
     fn inner_wiring<'a>(
         &self,
         phase: usize,
         data: Vec<SumCheckPoly<F, E, impl MultilinearPoly<F, E>, impl MultilinearPoly<E>>>,
+        size: usize,
     ) -> SumCheckPolys<'a, F, E> {
         let sub_size = data
             .iter()
@@ -312,7 +381,7 @@ impl<F: Field, E: ExtensionField<F>> VanillaNode<F, E> {
         let wiring = |exprs: &Vec<Vec<_>>| {
             let log2_sub_input_size = self.log2_sub_input_size();
             let sub_input_mask = (1 << log2_sub_input_size) - 1;
-            Vec::from_par_iter((0..self.input_size()).into_par_iter().map(|b| {
+            Vec::from_par_iter((0..size).into_par_iter().map(|b| {
                 let evaluate = move |expr| evaluate(expr, b >> log2_sub_input_size);
                 let exprs = &exprs[b & sub_input_mask];
                 exprs.par_iter().with_min_len(64).map(evaluate).sum()
@@ -321,7 +390,7 @@ impl<F: Field, E: ExtensionField<F>> VanillaNode<F, E> {
         self.wirings[phase]
             .par_iter()
             .map(wiring)
-            .map(box_dense_poly)
+            .map(box_owned_dense_poly)
             .map(SumCheckPoly::Extension)
             .collect()
     }
@@ -421,7 +490,7 @@ impl<F: Field, E: ExtensionField<F>> VanillaNode<F, E> {
 }
 
 type SumCheckPolys<'a, F, E> =
-    Vec<SumCheckPoly<F, E, &'a BoxMultilinearPoly<'a, F, E>, BoxMultilinearPoly<'static, E, E>>>;
+    Vec<SumCheckPoly<F, E, &'a BoxMultilinearPoly<'a, F, E>, BoxMultilinearPolyOwned<'static, E>>>;
 
 type WiringExpression<F> = Vec<Vec<Expression<F, Wire>>>;
 
